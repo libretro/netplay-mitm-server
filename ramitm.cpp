@@ -97,8 +97,10 @@ void RAMITM::newConnection() {
 void RAMITM::readyRead() {
   QTcpSocket *sock = static_cast<QTcpSocket*>(sender());
 
-  if(!sock)
+  if(!sock) {
+    printf("ERROR: no socket in readyRead\n");
     return;
+  }
 
   ClientState state = static_cast<ClientState>(sock->property("state").toUInt());
   uint32_t cmd[2] = {0};
@@ -144,13 +146,7 @@ void RAMITM::readyRead() {
     if(state == STATE_NONE) {
       if(cmd[0] == CMD_ACK) {
         printf("ACK\n");
-
         // acknowledge, wait for next command
-        if(sock->bytesAvailable() > 0)
-        {
-          readyRead();
-          return;
-        }
       }
 
       if(cmd[0] == CMD_NACK || cmd[0] == CMD_DISCONNECT) {
@@ -307,9 +303,16 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&m_info, sizeof(m_info.cmd) + info_payload_size);
 
-      sock->setProperty("state", STATE_NONE);
-
       printf("sent info to host\n");
+
+      if(m_info_set) {
+        printf("next state is send sync\n");
+        sock->setProperty("state", STATE_SEND_SYNC);
+        readyRead();
+      }else{
+        printf("next state is none\n");
+        sock->setProperty("state", STATE_NONE);
+      }
 
       break;
     }
@@ -360,6 +363,29 @@ void RAMITM::readyRead() {
 
       break;
     }
+    case STATE_SEND_SYNC:
+    {
+      sync_buf_s sync;
+      size_t sync_payload_size = sizeof(sync) - 2 * sizeof(uint32_t);
+
+      memset(&sync, 0, sizeof(sync));
+
+      sync.cmd[0] = htonl(CMD_SYNC);
+
+      // remove the length of the cmd member from the payload size
+      sync.cmd[1] = htonl(sync_payload_size);
+
+      sync.devices[0] = 1;
+      sync.devices[1] = 1;
+
+      sock->write((const char *)&sync, sizeof(sync));
+
+      sock->setProperty("state", STATE_NONE);
+
+      printf("sent sync to host\n");
+
+      break;
+    }
     default:
       // ignore unknown command
       printf("ignoring unknown command %08X with size %u\n", cmd[0], cmd[1]);
@@ -373,8 +399,8 @@ void RAMITM::readyRead() {
   // if we didn't use all the data we got, keep reading
   if(sock->bytesAvailable() > 0)
   {
+    printf("still %lli bytes left, queueing readyRead\n", sock->bytesAvailable());
     readyRead();
-    return;
   }
 }
 
