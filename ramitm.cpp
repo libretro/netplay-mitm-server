@@ -348,7 +348,7 @@ void RAMITM::readyRead() {
 
       printf("info: core name is %s\n", info.core_name);
       printf("info: core version is %s\n", info.core_version);
-      printf("info: content crc is %08X\n", info.content_crc);
+      printf("info: content crc is %08X\n", ntohl(info.content_crc));
 
       sock->setProperty("state", STATE_SEND_INFO);
 
