@@ -31,6 +31,7 @@ RAMITM::RAMITM(QObject *parent) :
   ,m_numClients(0)
   ,m_header()
   ,m_info()
+  ,m_info_set(false)
 {
   memset(&m_info, 0, sizeof(m_info));
 
@@ -297,16 +298,14 @@ void RAMITM::readyRead() {
     }
     case STATE_SEND_INFO:
     {
-      size_t info_payload_size = sizeof(m_info) - sizeof(m_info.cmd);
-
-      memset(&m_info, 0, sizeof(m_info));
+      size_t info_payload_size = m_info_set ? (sizeof(m_info) - sizeof(m_info.cmd)) : 0;
 
       m_info.cmd[0] = htonl(CMD_INFO);
 
       // remove the length of the cmd member from the payload size
       m_info.cmd[1] = htonl(info_payload_size);
 
-      sock->write((const char *)&m_info, sizeof(m_info));
+      sock->write((const char *)&m_info, sizeof(m_info.cmd) + info_payload_size);
 
       sock->setProperty("state", STATE_NONE);
 
@@ -318,6 +317,9 @@ void RAMITM::readyRead() {
     {
       struct info_buf_s info;
       size_t info_payload_size = sizeof(info) - sizeof(info.cmd);
+
+      info.cmd[0] = htonl(cmd[0]);
+      info.cmd[1] = htonl(cmd[1]);
 
       if(sock->bytesAvailable() < (qint64)info_payload_size) {
         // not enough data available yet, keep waiting
@@ -342,6 +344,7 @@ void RAMITM::readyRead() {
       if(m_numClients == 1) {
         // save the first INFO to echo back to all other clients
         memcpy(&m_info, &info, sizeof(info));
+        m_info_set = true;
       }
 
       printf("info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));

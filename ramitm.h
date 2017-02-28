@@ -60,6 +60,7 @@ private:
   uint m_numClients;
   char m_header[HEADER_LEN];
   info_buf_s m_info;
+  bool m_info_set;
 };
 
 #endif // __RAMITM_H
