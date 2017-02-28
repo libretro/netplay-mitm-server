@@ -112,7 +112,7 @@ void RAMITM::readyRead() {
   ClientState state = static_cast<ClientState>(sock->property("state").toUInt());
   uint32_t cmd[2] = {0};
 
-  printf("readyRead: %lli bytes available, state is %d for host %s\n", sock->bytesAvailable(), state, QC_STR(sock->peerAddress().toString()));
+  //printf("readyRead: %lli bytes available, state is %d for host %s\n", sock->bytesAvailable(), state, QC_STR(sock->peerAddress().toString()));
 
   /*int bytes = sock->bytesAvailable();
 
@@ -179,7 +179,8 @@ void RAMITM::readyRead() {
           break;
       }
 
-      printf("got command %08X with payload size %u\n", cmd[0], cmd[1]);
+      if(cmd[0] != CMD_INPUT)
+        printf("got command %08X with payload size %u\n", cmd[0], cmd[1]);
     }
   }
 
@@ -453,7 +454,7 @@ void RAMITM::readyRead() {
         return;
       }
 
-      qint64 readBytes = sock->read((char*)&input, input_payload_size);
+      qint64 readBytes = sock->read((char*)&input.frame_num, input_payload_size);
 
       if(readBytes != (qint64)input_payload_size) {
         printf("could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, input_payload_size);
@@ -477,7 +478,8 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&noinput, sizeof(noinput));
 
-      printf("received INPUT and sent NOINPUT\n");
+      if(m_frameNumber % 100 == 0)
+        printf("received INPUT and sent NOINPUT %u\n", m_frameNumber);
 
       sock->setProperty("state", STATE_NONE);
 
