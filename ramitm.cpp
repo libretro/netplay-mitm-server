@@ -466,6 +466,11 @@ void RAMITM::readyRead() {
         if(player == sock) {
           mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
         }else{
+          if(!player->property("sync_sent").toBool()) {
+            // don't send MODE to other players that haven't finished their handshake yet
+            continue;
+          }
+
           mode.target = htons(2);
         }
 
@@ -509,30 +514,38 @@ void RAMITM::readyRead() {
         m_frameNumber = ntohl(input.frame_num);
       }
 
-      // forward this INPUT to all other players
-      foreach(QTcpSocket *player, m_sockets) {
-        if(player == sock) {
-          // don't echo INPUTs back to the same player
-          continue;
-        }
-
-        if(player->property("sync_sent").toBool())
-          player->write((const char *)&input, sizeof(input));
-      }
-
-      // server is transparent, so we send NOINPUT back to the client to tell it we aren't sending it any input ourselves
+      // server is transparent, so we send NOINPUT back to all the clients to tell them we aren't sending it any input ourselves
+      // (and that the server is done with this frame completely!)
       noinput_buf_s noinput;
       noinput.cmd[0] = htonl(CMD_NOINPUT);
       noinput.cmd[1] = htonl(sizeof(noinput) - sizeof(noinput.cmd));
       noinput.frame_num = htonl(m_frameNumber);
 
-      sock->write((const char *)&noinput, sizeof(noinput));
+      // forward this INPUT to everyone else, and send NOINPUT to everyone
+      foreach(QTcpSocket *player, m_sockets) {
+        if(player != sock && player->property("sync_sent").toBool()) {
+          // send this INPUT to all other handshook players
+          player->write((const char *)&input, sizeof(input));
+        }
+
+        if(m_sockets.indexOf(sock) == 0) {
+          // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
+          player->write((const char *)&noinput, sizeof(noinput));
+        }
+      }
 
       /*if(m_frameNumber % 100 == 0) {
         CLIENT_LOGF(sock, "received INPUT and sent NOINPUT %u\n", m_frameNumber);
       }*/
 
       sock->setProperty("state", STATE_NONE);
+
+      if(m_sockets.indexOf(sock) == 0)
+      {
+        // Increment server frame number ahead of master client sending a new INPUT with the same frame number.
+        // This allows sending MODE to new players as the first event of the next frame, before the master's INPUT.
+        ++m_frameNumber;
+      }
 
       break;
     }
