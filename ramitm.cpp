@@ -74,8 +74,16 @@ RAMITM::RAMITM(QObject *parent) :
 }
 
 void RAMITM::start() {
-  if(!m_sock->listen(QHostAddress::Any, 5905)) {
-    printf("could not bind to port\n");
+  int port = 55435;
+
+  QStringList args = qApp->arguments();
+
+  if(args.contains("-port")) {
+    port = args.at(args.indexOf("-port") + 1).toInt();
+  }
+
+  if(!m_sock->listen(QHostAddress::Any, port)) {
+    printf("could not bind to port %d\n", port);
     QCoreApplication::quit();
     return;
   }
@@ -368,6 +376,11 @@ void RAMITM::readyRead() {
         return;
       }
 
+      CLIENT_LOGF(sock, "info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
+      CLIENT_LOGF(sock, "info: core name is %s\n", info.core_name);
+      CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
+      CLIENT_LOGF(sock, "info: content crc is %08X\n", ntohl(info.content_crc));
+
       if(m_sockets.indexOf(sock) == 0) {
         if(m_first_sync_sent) {
           // the first client is just echoing back the info we already have, ignore it
@@ -392,12 +405,6 @@ void RAMITM::readyRead() {
           return;
         }
       }
-
-      CLIENT_LOGF(sock, "info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
-
-      CLIENT_LOGF(sock, "info: core name is %s\n", info.core_name);
-      CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
-      CLIENT_LOGF(sock, "info: content crc is %08X\n", ntohl(info.content_crc));
 
       sock->setProperty("state", STATE_SEND_INFO);
 
