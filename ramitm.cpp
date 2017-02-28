@@ -1,3 +1,6 @@
+/* (C) Copyright 2017 - Brad Parker */
+/* License: GPL */
+
 #include "ramitm.h"
 #include <stdio.h>
 
@@ -32,6 +35,9 @@ RAMITM::RAMITM(QObject *parent) :
   ,m_header()
   ,m_info()
   ,m_info_set(false)
+  ,m_first_sync_sent(false)
+  ,m_sockets()
+  ,m_frameNumber(0)
 {
   memset(&m_info, 0, sizeof(m_info));
 
@@ -86,6 +92,8 @@ void RAMITM::newConnection() {
 
   if(!sock)
     return;
+
+  m_sockets.append(sock);
 
   printf("got new connection from %s\n", QC_STR(sock->peerAddress().toString()));
 
@@ -161,6 +169,9 @@ void RAMITM::readyRead() {
           break;
         case CMD_INFO:
           state = STATE_RECV_INFO;
+          break;
+        case CMD_PLAY:
+          state = STATE_RECV_PLAY;
           break;
         default:
           break;
@@ -345,9 +356,17 @@ void RAMITM::readyRead() {
       }
 
       if(m_numClients == 1) {
-        // save the first INFO to echo back to all other clients
-        memcpy(&m_info, &info, sizeof(info));
-        m_info_set = true;
+        if(m_first_sync_sent) {
+          // the first client is just echoing back the info we already have, ignore it
+          sock->setProperty("state", STATE_NONE);
+          break;
+        }else{
+          // save the first INFO to echo back to all other clients
+          memcpy(&m_info, &info, sizeof(info));
+          m_info_set = true;
+        }
+      }else if(m_numClients > 1) {
+        // make sure other clients have the same INFO
       }
 
       printf("info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
@@ -375,14 +394,45 @@ void RAMITM::readyRead() {
       // remove the length of the cmd member from the payload size
       sync.cmd[1] = htonl(sync_payload_size);
 
-      sync.devices[0] = 1;
-      sync.devices[1] = 1;
+      sync.frame_num = htonl(m_frameNumber);
+      sync.devices[0] = htonl(1);
+      sync.devices[1] = htonl(1);
 
       sock->write((const char *)&sync, sizeof(sync));
+
+      if(m_numClients == 1)
+        m_first_sync_sent = true;
 
       sock->setProperty("state", STATE_NONE);
 
       printf("sent sync to host\n");
+
+      break;
+    }
+    case STATE_RECV_PLAY:
+    {
+      if(cmd[1] > 0)
+      {
+        // not using the payload right now
+        sock->read(cmd[1]);
+      }
+
+      mode_buf_s mode;
+
+      memset(&mode, 0, sizeof(mode));
+
+      mode.cmd[0] = htonl(CMD_MODE);
+      mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
+
+      mode.frame_num = htonl(m_frameNumber);
+      mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+      mode.player_num = htons(m_sockets.indexOf(sock));
+
+      sock->write((const char *)&mode, sizeof(mode));
+
+      printf("received PLAY and sent MODE to user\n");
+
+      sock->setProperty("state", STATE_NONE);
 
       break;
     }
@@ -409,6 +459,8 @@ void RAMITM::disconnected() {
 
   if(!sock)
     return;
+
+  m_sockets.removeOne(sock);
 
   printf("client %s disconnected\n", QC_STR(sock->peerAddress().toString()));
 
