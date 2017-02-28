@@ -10,12 +10,23 @@
 
 #include <arpa/inet.h>
 
+static QString getPeerIPv4(QHostAddress addr) {
+  struct in_addr ip_addr;
+  ip_addr.s_addr = addr.toIPv4Address();
+
+  return QString(inet_ntoa(ip_addr));
+}
+
 #define QC_STR(x) x.toStdString().c_str()
+#define HOST(x) getPeerIPv4(x->peerAddress())
+#define PORT(x) x->peerPort()
+#define CLIENT_LOG(x, y) printf("%s:%d %s\n", QC_STR(HOST(x)), PORT(x), y)
+#define CLIENT_LOGF(x, fmt, ...) printf("%s:%d ", QC_STR(HOST(x)), PORT(x)); printf(fmt, __VA_ARGS__)
 
 size_t strlcpy(char *dest, const char *source, size_t size)
 {
   size_t src_size = 0;
-  size_t        n = size;
+  size_t n = size;
 
   if(n)
     while(--n && (*dest++ = *source++)) src_size++;
@@ -69,7 +80,7 @@ void RAMITM::start() {
     return;
   }
 
-  printf("bound to port\n");
+  printf("bound to port %d\n", m_sock->serverPort());
 }
 
 void RAMITM::handleSIGINT(int) {
@@ -94,7 +105,7 @@ void RAMITM::newConnection() {
 
   m_sockets.append(sock);
 
-  printf("got new connection from %s\n", QC_STR(sock->peerAddress().toString()));
+  CLIENT_LOG(sock, "got new connection");
 
   connect(sock, SIGNAL(readyRead()), this, SLOT(readyRead()));
   connect(sock, SIGNAL(disconnected()), this, SLOT(disconnected()));
@@ -128,7 +139,7 @@ void RAMITM::readyRead() {
   if(state >= STATE_NONE) {
     if(sock->bytesAvailable() < 8) {
       // wait for more data
-      printf("not enough data for a command yet, keep waiting\n");
+      //printf("not enough data for a command yet, keep waiting\n");
       return;
     }
 
@@ -138,7 +149,7 @@ void RAMITM::readyRead() {
     qint64 readBytes = sock->read((char*)newcmd, 8);
 
     if(readBytes != 8) {
-      printf("invalid data received from %s, aborting connection\n", QC_STR(sock->peerAddress().toString()));
+      CLIENT_LOG(sock, "invalid data received, aborting connection");
       sock->deleteLater();
       return;
     }
@@ -147,17 +158,17 @@ void RAMITM::readyRead() {
     cmd[1] = ntohl(newcmd[1]);
 
     if(sock->bytesAvailable() < (qint64)cmd[1]) {
-      printf("WARNING: not enough data, we have %lli bytes available but the command payload size is %u\n", sock->bytesAvailable(), cmd[1]);
+      CLIENT_LOGF(sock, "WARNING: not enough data, we have %lli bytes available but the command payload size is %u\n", sock->bytesAvailable(), cmd[1]);
     }
 
     if(state == STATE_NONE) {
       if(cmd[0] == CMD_ACK) {
-        printf("ACK\n");
+        CLIENT_LOG(sock, "ACK");
         // acknowledge, wait for next command
       }
 
       if(cmd[0] == CMD_NACK || cmd[0] == CMD_DISCONNECT) {
-        printf("client %s didn't like our data or requested a disconnect, aborting connection\n", QC_STR(sock->peerAddress().toString()));
+        CLIENT_LOG(sock, "client didn't like our data or requested a disconnect, aborting connection");
         sock->deleteLater();
         return;
       }
@@ -179,8 +190,9 @@ void RAMITM::readyRead() {
           break;
       }
 
-      if(cmd[0] != CMD_INPUT)
-        printf("got command %08X with payload size %u\n", cmd[0], cmd[1]);
+      if(cmd[0] != CMD_INPUT) {
+        CLIENT_LOGF(sock, "got command %08X with payload size %u\n", cmd[0], cmd[1]);
+      }
     }
   }
 
@@ -190,7 +202,7 @@ void RAMITM::readyRead() {
       if(m_sockets.indexOf(sock) == 0) {
         if(sock->bytesAvailable() < 16) {
           // not enough data available yet, keep waiting
-          printf("header: not enough data available, only %lli bytes out of 16\n", sock->bytesAvailable());
+          CLIENT_LOGF(sock, "header: not enough data available, only %lli bytes out of 16\n", sock->bytesAvailable());
           return;
         }else{
           char header[HEADER_LEN];
@@ -198,12 +210,12 @@ void RAMITM::readyRead() {
           qint64 readBytes = sock->read(header, HEADER_LEN);
 
           if(readBytes != HEADER_LEN) {
-            printf("no header received from %s, aborting connection\n", QC_STR(sock->peerAddress().toString()));
+            CLIENT_LOG(sock, "no header received, aborting connection");
             sock->deleteLater();
             return;
           }
 
-          printf("header: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
+          CLIENT_LOGF(sock, "header: got %lli bytes\n", readBytes);
 
           // store the first client's header to use for all others
           memcpy(m_header, header, HEADER_LEN);
@@ -214,11 +226,11 @@ void RAMITM::readyRead() {
       qint64 wroteBytes = sock->write(m_header, HEADER_LEN);
 
       if(wroteBytes != HEADER_LEN) {
-        printf("could not send header to client %s, aborting connection\n", QC_STR(sock->peerAddress().toString()));
+        CLIENT_LOG(sock, "could not send header to client, aborting connection");
         sock->deleteLater();
         return;
       }else{
-        printf("sent header to client %s\n", QC_STR(sock->peerAddress().toString()));
+        CLIENT_LOG(sock, "sent header to client");
       }
 
       if(m_sockets.count() > 1) {
@@ -228,21 +240,21 @@ void RAMITM::readyRead() {
         qint64 readBytes = sock->read(header, HEADER_LEN);
 
         if(readBytes != HEADER_LEN) {
-          printf("no header received from %s, aborting connection\n", QC_STR(sock->peerAddress().toString()));
+          CLIENT_LOG(sock, "no header received, aborting connection");
           sock->deleteLater();
           return;
         }
 
-        printf("SVR header: %08X %08X %08X %08X\n", m_header[0], m_header[1], m_header[2], m_header[3]);
-        printf("CLT header: %08X %08X %08X %08X\n", header[0], header[1], header[2], header[3]);
+        CLIENT_LOGF(sock, "SVR header: %08X %08X %08X %08X\n", m_header[0], m_header[1], m_header[2], m_header[3]);
+        CLIENT_LOGF(sock, "CLT header: %08X %08X %08X %08X\n", header[0], header[1], header[2], header[3]);
 
         if(memcmp(header, m_header, HEADER_LEN)) {
           // header did not match the first connection
-          printf("header did not match the first connection, aborting\n");
+          CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
           return;
         }else{
-          printf("header matches\n");
+          CLIENT_LOG(sock, "header matches");
         }
       }
 
@@ -265,7 +277,7 @@ void RAMITM::readyRead() {
 
       sock->setProperty("state", STATE_NONE);
 
-      printf("sent nick to host\n");
+      CLIENT_LOG(sock, "sent nick to host");
 
       break;
     }
@@ -275,12 +287,12 @@ void RAMITM::readyRead() {
 
       if(sock->bytesAvailable() < (qint64)sizeof(nick.nick)) {
         // not enough data available yet, keep waiting
-        printf("recv nick: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), sizeof(nick));
+        CLIENT_LOGF(sock, "recv nick: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), sizeof(nick));
         return;
       }
 
       if(cmd[1] != sizeof(nick.nick)) {
-        printf("nickname size is wrong (%08X), aborting\n", cmd[1]);
+        CLIENT_LOGF(sock, "nickname size is wrong (%08X), aborting\n", cmd[1]);
         sock->deleteLater();
         return;
       }
@@ -288,14 +300,14 @@ void RAMITM::readyRead() {
       qint64 readBytes = sock->read(nick.nick, sizeof(nick.nick));
 
       if(readBytes != sizeof(nick.nick)) {
-        printf("could not read nickname from client. got %lli bytes when expecting %li, aborting\n", readBytes, sizeof(nick.nick));
+        CLIENT_LOGF(sock, "could not read nickname from client. got %lli bytes when expecting %li, aborting\n", readBytes, sizeof(nick.nick));
         sock->deleteLater();
         return;
       }
 
-      printf("nick: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
+      CLIENT_LOGF(sock, "nick: got %lli bytes\n", readBytes);
 
-      printf("nick is %s\n", nick.nick);
+      CLIENT_LOGF(sock, "nick is %s\n", nick.nick);
 
       sock->setProperty("state", STATE_SEND_INFO);
 
@@ -315,14 +327,14 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&m_info, sizeof(m_info.cmd) + info_payload_size);
 
-      printf("sent info to host\n");
+      CLIENT_LOG(sock, "sent info to host");
 
       if(m_info_set) {
-        printf("next state is send sync\n");
+        CLIENT_LOG(sock, "next state is send sync");
         sock->setProperty("state", STATE_SEND_SYNC);
         readyRead();
       }else{
-        printf("next state is none\n");
+        CLIENT_LOG(sock, "next state is none");
         sock->setProperty("state", STATE_NONE);
       }
 
@@ -338,12 +350,12 @@ void RAMITM::readyRead() {
 
       if(sock->bytesAvailable() < (qint64)info_payload_size) {
         // not enough data available yet, keep waiting
-        printf("recv info: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), info_payload_size);
+        CLIENT_LOGF(sock, "recv info: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), info_payload_size);
         return;
       }
 
       if(cmd[1] != info_payload_size) {
-        printf("info size is wrong (%08X), aborting\n", cmd[1]);
+        CLIENT_LOGF(sock, "info size is wrong (%08X), aborting\n", cmd[1]);
         sock->deleteLater();
         return;
       }
@@ -351,7 +363,7 @@ void RAMITM::readyRead() {
       qint64 readBytes = sock->read(info.core_name, info_payload_size);
 
       if(readBytes != (qint64)info_payload_size) {
-        printf("could not read info from client. got %lli bytes when expecting %li, aborting\n", readBytes, info_payload_size);
+        CLIENT_LOGF(sock, "could not read info from client. got %lli bytes when expecting %li, aborting\n", readBytes, info_payload_size);
         sock->deleteLater();
         return;
       }
@@ -368,13 +380,24 @@ void RAMITM::readyRead() {
         }
       }else if(m_sockets.indexOf(sock) > 0) {
         // make sure other clients have the same INFO
+        if(!memcmp(&m_info, &info, sizeof(info))) {
+          // info matches
+          CLIENT_LOG(sock, "info matches");
+          sock->setProperty("state", STATE_NONE);
+          break;
+        }else{
+          // no match, disconnect client
+          CLIENT_LOG(sock, "info from client did not match, aborting connection");
+          sock->deleteLater();
+          return;
+        }
       }
 
-      printf("info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
+      CLIENT_LOGF(sock, "info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
 
-      printf("info: core name is %s\n", info.core_name);
-      printf("info: core version is %s\n", info.core_version);
-      printf("info: content crc is %08X\n", ntohl(info.content_crc));
+      CLIENT_LOGF(sock, "info: core name is %s\n", info.core_name);
+      CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
+      CLIENT_LOGF(sock, "info: content crc is %08X\n", ntohl(info.content_crc));
 
       sock->setProperty("state", STATE_SEND_INFO);
 
@@ -406,7 +429,7 @@ void RAMITM::readyRead() {
 
       sock->setProperty("state", STATE_NONE);
 
-      printf("sent sync to host\n");
+      CLIENT_LOG(sock, "sent sync to host");
 
       break;
     }
@@ -431,7 +454,7 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&mode, sizeof(mode));
 
-      printf("received PLAY and sent MODE to user\n");
+      CLIENT_LOG(sock, "received PLAY and sent MODE to user");
 
       sock->setProperty("state", STATE_NONE);
 
@@ -444,12 +467,12 @@ void RAMITM::readyRead() {
 
       if(sock->bytesAvailable() < (qint64)input_payload_size) {
         // not enough data available yet, keep waiting
-        printf("recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
+        CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
         return;
       }
 
       if(cmd[1] != input_payload_size) {
-        printf("input size is wrong (%08X), aborting\n", cmd[1]);
+        CLIENT_LOGF(sock, "input size is wrong (%08X), aborting\n", cmd[1]);
         sock->deleteLater();
         return;
       }
@@ -457,7 +480,7 @@ void RAMITM::readyRead() {
       qint64 readBytes = sock->read((char*)&input.frame_num, input_payload_size);
 
       if(readBytes != (qint64)input_payload_size) {
-        printf("could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, input_payload_size);
+        CLIENT_LOGF(sock, "could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, input_payload_size);
         sock->deleteLater();
         return;
       }
@@ -478,8 +501,9 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&noinput, sizeof(noinput));
 
-      if(m_frameNumber % 100 == 0)
-        printf("received INPUT and sent NOINPUT %u\n", m_frameNumber);
+      /*if(m_frameNumber % 100 == 0) {
+        CLIENT_LOGF(sock, "received INPUT and sent NOINPUT %u\n", m_frameNumber);
+      }*/
 
       sock->setProperty("state", STATE_NONE);
 
@@ -487,7 +511,7 @@ void RAMITM::readyRead() {
     }
     default:
       // ignore unknown command
-      printf("ignoring unknown command %08X with size %u\n", cmd[0], cmd[1]);
+      CLIENT_LOGF(sock, "ignoring unknown command %08X with size %u\n", cmd[0], cmd[1]);
 
       if(cmd[1] > 0)
         sock->read(cmd[1]);
@@ -498,7 +522,7 @@ void RAMITM::readyRead() {
   // if we didn't use all the data we got, keep reading
   if(sock->bytesAvailable() > 0)
   {
-    printf("still %lli bytes left, queueing readyRead\n", sock->bytesAvailable());
+    //CLIENT_LOGF(sock, "still %lli bytes left, queueing readyRead\n", sock->bytesAvailable());
     readyRead();
   }
 }
@@ -511,7 +535,7 @@ void RAMITM::disconnected() {
 
   m_sockets.removeOne(sock);
 
-  printf("client %s disconnected\n", QC_STR(sock->peerAddress().toString()));
+  CLIENT_LOG(sock, "client disconnected");
 
   sock->deleteLater();
 }
@@ -524,7 +548,7 @@ void RAMITM::error(QAbstractSocket::SocketError socketError) {
   if(!sock)
     return;
 
-  printf("client %s got socket error %d\n", QC_STR(sock->peerAddress().toString()), socketError);
+  CLIENT_LOGF(sock, "client got socket error %d\n", socketError);
 
   // disconnected() will be emitted (because of the error, or by this destructor?)
   sock->deleteLater();
