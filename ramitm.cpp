@@ -419,7 +419,17 @@ void RAMITM::readyRead() {
       sync.cmd[1] = htonl(sync_payload_size);
 
       for(int i = 0; i < m_sockets.count(); ++i) {
-        if(i == m_sockets.indexOf(sock)) {
+        QTcpSocket *player = m_sockets.at(i);
+
+        if(!player)
+          continue;
+
+        if(!player->property("sync_sent").toBool()) {
+          // don't count other players that haven't finished their handshake yet
+          continue;
+        }
+
+        if(player == sock) {
           // we don't count ourselves
           continue;
         }
@@ -463,14 +473,14 @@ void RAMITM::readyRead() {
       mode.player_num = htons(m_sockets.indexOf(sock));
 
       foreach(QTcpSocket *player, m_sockets) {
+        if(!player->property("sync_sent").toBool()) {
+          // don't send MODE to other players that haven't finished their handshake yet
+          continue;
+        }
+
         if(player == sock) {
           mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
         }else{
-          if(!player->property("sync_sent").toBool()) {
-            // don't send MODE to other players that haven't finished their handshake yet
-            continue;
-          }
-
           mode.target = htons(2);
         }
 
@@ -523,14 +533,16 @@ void RAMITM::readyRead() {
 
       // forward this INPUT to everyone else, and send NOINPUT to everyone
       foreach(QTcpSocket *player, m_sockets) {
-        if(player != sock && player->property("sync_sent").toBool()) {
-          // send this INPUT to all other handshook players
-          player->write((const char *)&input, sizeof(input));
-        }
+        if(player->property("sync_sent").toBool()) {
+          if(player != sock) {
+            // send this INPUT to all other handshook players
+            player->write((const char *)&input, sizeof(input));
+          }
 
-        if(m_sockets.indexOf(sock) == 0) {
-          // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
-          player->write((const char *)&noinput, sizeof(noinput));
+          if(m_sockets.indexOf(sock) == 0) {
+            // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
+            player->write((const char *)&noinput, sizeof(noinput));
+          }
         }
       }
 
