@@ -418,6 +418,16 @@ void RAMITM::readyRead() {
       // remove the length of the cmd member from the payload size
       sync.cmd[1] = htonl(sync_payload_size);
 
+      for(int i = 0; i < m_sockets.count(); ++i) {
+        if(i == m_sockets.indexOf(sock)) {
+          // we don't count ourselves
+          continue;
+        }
+
+        sync.players |= 1U << i;
+      }
+
+      sync.players = htonl(sync.players);
       sync.frame_num = htonl(m_frameNumber);
       sync.devices[0] = htonl(1);
       sync.devices[1] = htonl(1);
@@ -428,6 +438,7 @@ void RAMITM::readyRead() {
         m_first_sync_sent = true;
 
       sock->setProperty("state", STATE_NONE);
+      sock->setProperty("sync_sent", true);
 
       CLIENT_LOG(sock, "sent sync to host");
 
@@ -449,12 +460,19 @@ void RAMITM::readyRead() {
       mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
 
       mode.frame_num = htonl(m_frameNumber);
-      mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
       mode.player_num = htons(m_sockets.indexOf(sock));
 
-      sock->write((const char *)&mode, sizeof(mode));
+      foreach(QTcpSocket *player, m_sockets) {
+        if(player == sock) {
+          mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+        }else{
+          mode.target = htons(2);
+        }
 
-      CLIENT_LOG(sock, "received PLAY and sent MODE to user");
+        player->write((const char *)&mode, sizeof(mode));
+      }
+
+      CLIENT_LOG(sock, "received PLAY and sent MODE to all users");
 
       sock->setProperty("state", STATE_NONE);
 
@@ -491,7 +509,16 @@ void RAMITM::readyRead() {
         m_frameNumber = ntohl(input.frame_num);
       }
 
-      // NOTE: here is where we would forward this INPUT to all other players
+      // forward this INPUT to all other players
+      foreach(QTcpSocket *player, m_sockets) {
+        if(player == sock) {
+          // don't echo INPUTs back to the same player
+          continue;
+        }
+
+        if(player->property("sync_sent").toBool())
+          player->write((const char *)&input, sizeof(input));
+      }
 
       // server is transparent, so we send NOINPUT back to the client to tell it we aren't sending it any input ourselves
       noinput_buf_s noinput;
