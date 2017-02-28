@@ -31,7 +31,6 @@ size_t strlcpy(char *dest, const char *source, size_t size)
 RAMITM::RAMITM(QObject *parent) :
   QObject(parent)
   ,m_sock(new QTcpServer(this))
-  ,m_numClients(0)
   ,m_header()
   ,m_info()
   ,m_info_set(false)
@@ -173,6 +172,9 @@ void RAMITM::readyRead() {
         case CMD_PLAY:
           state = STATE_RECV_PLAY;
           break;
+        case CMD_INPUT:
+          state = STATE_RECV_INPUT;
+          break;
         default:
           break;
       }
@@ -184,7 +186,7 @@ void RAMITM::readyRead() {
   switch(state) {
     case STATE_HEADER:
     {
-      if(m_numClients == 0) {
+      if(m_sockets.indexOf(sock) == 0) {
         if(sock->bytesAvailable() < 16) {
           // not enough data available yet, keep waiting
           printf("header: not enough data available, only %lli bytes out of 16\n", sock->bytesAvailable());
@@ -218,7 +220,7 @@ void RAMITM::readyRead() {
         printf("sent header to client %s\n", QC_STR(sock->peerAddress().toString()));
       }
 
-      if(m_numClients > 0) {
+      if(m_sockets.count() > 1) {
         // read connection header back and verify it is the same as the first client
         char header[HEADER_LEN];
 
@@ -242,8 +244,6 @@ void RAMITM::readyRead() {
           printf("header matches\n");
         }
       }
-
-      ++m_numClients;
 
       sock->setProperty("state", STATE_SEND_NICKNAME);
 
@@ -355,7 +355,7 @@ void RAMITM::readyRead() {
         return;
       }
 
-      if(m_numClients == 1) {
+      if(m_sockets.indexOf(sock) == 0) {
         if(m_first_sync_sent) {
           // the first client is just echoing back the info we already have, ignore it
           sock->setProperty("state", STATE_NONE);
@@ -365,7 +365,7 @@ void RAMITM::readyRead() {
           memcpy(&m_info, &info, sizeof(info));
           m_info_set = true;
         }
-      }else if(m_numClients > 1) {
+      }else if(m_sockets.indexOf(sock) > 0) {
         // make sure other clients have the same INFO
       }
 
@@ -400,7 +400,7 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&sync, sizeof(sync));
 
-      if(m_numClients == 1)
+      if(m_sockets.indexOf(sock) == 0)
         m_first_sync_sent = true;
 
       sock->setProperty("state", STATE_NONE);
@@ -436,6 +436,53 @@ void RAMITM::readyRead() {
 
       break;
     }
+    case STATE_RECV_INPUT:
+    {
+      input_buf_s input;
+      size_t input_payload_size = sizeof(input) - sizeof(input.cmd);
+
+      if(sock->bytesAvailable() < (qint64)input_payload_size) {
+        // not enough data available yet, keep waiting
+        printf("recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
+        return;
+      }
+
+      if(cmd[1] != input_payload_size) {
+        printf("input size is wrong (%08X), aborting\n", cmd[1]);
+        sock->deleteLater();
+        return;
+      }
+
+      qint64 readBytes = sock->read((char*)&input, input_payload_size);
+
+      if(readBytes != (qint64)input_payload_size) {
+        printf("could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, input_payload_size);
+        sock->deleteLater();
+        return;
+      }
+
+      if(m_sockets.indexOf(sock) == 0) {
+        // this is the first (master) connection
+        // server follows the first connection's frame number
+        m_frameNumber = ntohl(input.frame_num);
+      }
+
+      // NOTE: here is where we would forward this INPUT to all other players
+
+      // server is transparent, so we send NOINPUT back to the client to tell it we aren't sending it any input ourselves
+      noinput_buf_s noinput;
+      noinput.cmd[0] = htonl(CMD_NOINPUT);
+      noinput.cmd[1] = htonl(sizeof(noinput) - sizeof(noinput.cmd));
+      noinput.frame_num = htonl(m_frameNumber);
+
+      sock->write((const char *)&noinput, sizeof(noinput));
+
+      printf("received INPUT and sent NOINPUT\n");
+
+      sock->setProperty("state", STATE_NONE);
+
+      break;
+    }
     default:
       // ignore unknown command
       printf("ignoring unknown command %08X with size %u\n", cmd[0], cmd[1]);
@@ -465,8 +512,6 @@ void RAMITM::disconnected() {
   printf("client %s disconnected\n", QC_STR(sock->peerAddress().toString()));
 
   sock->deleteLater();
-
-  --m_numClients;
 }
 
 void RAMITM::error(QAbstractSocket::SocketError socketError) {

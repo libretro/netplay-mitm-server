@@ -11,6 +11,8 @@
 #define CMD_ACK 0x0000
 #define CMD_NACK 0x0001
 #define CMD_DISCONNECT 0x0002
+#define CMD_INPUT 0x0003
+#define CMD_NOINPUT 0x0004
 #define CMD_NICK 0x0020
 #define CMD_INFO 0x0022
 #define CMD_SYNC 0x0023
@@ -45,6 +47,20 @@ struct mode_buf_s {
   uint16_t player_num;
 };
 
+struct input_buf_s {
+  uint32_t cmd[2];
+  uint32_t frame_num;
+  uint32_t player; // high bit == is server data
+  uint32_t joypad_input;
+  uint32_t analog1_input;
+  uint32_t analog2_input;
+};
+
+struct noinput_buf_s {
+  uint32_t cmd[2];
+  uint32_t frame_num;
+};
+
 enum ClientState {
   STATE_HEADER = 0,
   STATE_SEND_NICKNAME,
@@ -53,7 +69,8 @@ enum ClientState {
   STATE_NONE, // NOTE: keep NONE placed after all initial mandatory states
   STATE_RECV_INFO,
   STATE_RECV_NICKNAME,
-  STATE_RECV_PLAY
+  STATE_RECV_PLAY,
+  STATE_RECV_INPUT
 };
 
 class RAMITM : public QObject {
@@ -76,7 +93,6 @@ private slots:
 
 private:
   QTcpServer *m_sock;
-  uint m_numClients;
   char m_header[HEADER_LEN];
   info_buf_s m_info;
   bool m_info_set;
