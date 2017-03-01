@@ -1,5 +1,17 @@
-/* (C) Copyright 2017 - Brad Parker */
-/* License: GPL */
+/*  netplay-mitm-server - A man-in-the-middle server implementation for RetroArch netplay.
+ *  Copyright (C) 2017 - Brad Parker
+ *
+ *  netplay-mitm-server is free software: you can redistribute it and/or modify it under the terms
+ *  of the GNU General Public License as published by the Free Software Found-
+ *  ation, either version 3 of the License, or (at your option) any later version.
+ *
+ *  netplay-mitm-server is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+ *  without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+ *  PURPOSE.  See the GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along with netplay-mitm-server.
+ *  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include "ramitm.h"
 #include <stdio.h>
@@ -39,6 +51,14 @@ size_t strlcpy(char *dest, const char *source, size_t size)
   return src_size;
 }
 
+static void dump_uints(const char *data, int bytes) {
+  for(uint i = 0; i < bytes / sizeof(uint32_t); i++) {
+    printf(" %08X", ntohl(((uint32_t*)data)[i]));
+  }
+
+  printf("\n");
+}
+
 RAMITM::RAMITM(QObject *parent) :
   QObject(parent)
   ,m_sock(new QTcpServer(this))
@@ -71,6 +91,43 @@ RAMITM::RAMITM(QObject *parent) :
 
   connect(m_sock, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
   connect(m_sock, SIGNAL(newConnection()), this, SLOT(newConnection()));
+}
+
+void RAMITM::sendMODE(QTcpSocket *sock) {
+  mode_buf_s mode;
+
+  memset(&mode, 0, sizeof(mode));
+
+  mode.cmd[0] = htonl(CMD_MODE);
+  mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
+
+  mode.frame_num = htonl(m_frameNumber);
+  mode.player_num = htons(m_sockets.indexOf(sock));
+
+  foreach(QTcpSocket *player, m_sockets) {
+    if(!player->property("sync_sent").toBool()) {
+      // don't send MODE to other players that haven't finished their handshake yet
+      continue;
+    }
+
+    if(player == sock) {
+      mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+    }else{
+      mode.target = htons(2);
+    }
+
+    CLIENT_LOGF(sock, "MODE for player %d:", m_sockets.indexOf(player));
+
+    for(uint i = 0; i < sizeof(mode) / sizeof(uint32_t); ++i) {
+      printf(" %08X", ntohl(((uint32_t*)&mode)[i]));
+    }
+
+    printf("\n");
+
+    player->write((const char *)&mode, sizeof(mode));
+  }
+
+  CLIENT_LOG(sock, "sent MODE to all users");
 }
 
 void RAMITM::start() {
@@ -132,16 +189,6 @@ void RAMITM::readyRead() {
   uint32_t cmd[2] = {0};
 
   //printf("readyRead: %lli bytes available, state is %d for host %s\n", sock->bytesAvailable(), state, QC_STR(sock->peerAddress().toString()));
-
-  /*int bytes = sock->bytesAvailable();
-
-  for(int i = 0; i < bytes; i++) {
-    char a;
-    sock->read(&a, 1);
-    printf(" %08X", a);
-  }
-
-  printf("\n");*/
 
   // check for end of mandatory state handling before accepting any new commands
   if(state >= STATE_NONE) {
@@ -482,6 +529,7 @@ void RAMITM::readyRead() {
 
         QTcpSocket *master = m_sockets.at(0);
 
+        master->setProperty("savestate_pending", true);
         master->write((const char *)&req, sizeof(req));
 
         CLIENT_LOG(sock, "requested savestate from the master");
@@ -497,40 +545,18 @@ void RAMITM::readyRead() {
         sock->read(cmd[1]);
       }
 
-      mode_buf_s mode;
+      QTcpSocket *master = m_sockets.at(0);
 
-      memset(&mode, 0, sizeof(mode));
+      bool savestate_pending = master->property("savestate_pending").toBool();
 
-      mode.cmd[0] = htonl(CMD_MODE);
-      mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
-
-      mode.frame_num = htonl(m_frameNumber);
-      mode.player_num = htons(m_sockets.indexOf(sock));
-
-      foreach(QTcpSocket *player, m_sockets) {
-        if(!player->property("sync_sent").toBool()) {
-          // don't send MODE to other players that haven't finished their handshake yet
-          continue;
-        }
-
-        if(player == sock) {
-          mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
-        }else{
-          mode.target = htons(2);
-        }
-
-        CLIENT_LOGF(sock, "MODE for player %d (0-based):", m_sockets.indexOf(player));
-
-        for(uint i = 0; i < sizeof(mode); ++i) {
-          printf(" %08X", ((char*)&mode)[i]);
-        }
-
-        printf("\n");
-
-        player->write((const char *)&mode, sizeof(mode));
+      if(!savestate_pending) {
+        sendMODE(sock);
+        CLIENT_LOG(sock, "received PLAY");
+      }else{
+        // track which player sent the original PLAY command so the 'you' bit in MODE can be set accordingly
+        sock->setProperty("sent_play", true);
+        CLIENT_LOG(sock, "received PLAY, waiting for savestate transfer to finish before sending MODE");
       }
-
-      CLIENT_LOG(sock, "received PLAY and sent MODE to all users");
 
       sock->setProperty("state", STATE_NONE);
 
@@ -598,7 +624,13 @@ void RAMITM::readyRead() {
 
       CLIENT_LOGF(sock, "successfully received savestate of %lu bytes with original size %u\n", state_serial_size, ntohl(loadsave.orig_size));
 
-      loadsave.frame_num = htonl(m_frameNumber);
+      QTcpSocket *master = m_sockets.at(0);
+      master->setProperty("savestate_pending", false);
+
+      //loadsave.frame_num = htonl(m_frameNumber);
+      m_frameNumber = ntohl(loadsave.frame_num);
+
+      CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", m_frameNumber);
 
       foreach(QTcpSocket *player, m_sockets) {
         if(player != sock) {
@@ -608,6 +640,22 @@ void RAMITM::readyRead() {
           CLIENT_LOGF(sock, "sent savestate to player %d\n", m_sockets.indexOf(player));
         }
       }
+
+      foreach(QTcpSocket *player, m_sockets) {
+        bool sent_play = player->property("sent_play").toBool();
+
+        // find which player sent the original PLAY, so we know who to set the 'you' bit for in the MODE command
+        if(sent_play) {
+          sendMODE(player);
+          player->setProperty("sent_play", false);
+        }
+      }
+
+      CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", m_frameNumber + 1, m_frameNumber);
+
+      ++m_frameNumber;
+
+      sock->setProperty("state", STATE_NONE);
 
       break;
     }
@@ -639,6 +687,7 @@ void RAMITM::readyRead() {
       if(m_sockets.indexOf(sock) == 0) {
         // this is the first (master) connection
         // server follows the first connection's frame number
+        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), m_frameNumber);
         m_frameNumber = ntohl(input.frame_num);
       }
 
@@ -659,6 +708,8 @@ void RAMITM::readyRead() {
 
           if(m_sockets.indexOf(sock) == 0) {
             // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
+            CLIENT_LOGF(sock, "sending NOINPUT to player %d:", m_sockets.indexOf(player));
+            dump_uints((const char *)&noinput, sizeof(noinput));
             player->write((const char *)&noinput, sizeof(noinput));
           }
         }
@@ -674,6 +725,7 @@ void RAMITM::readyRead() {
       {
         // Increment server frame number ahead of master client sending a new INPUT with the same frame number.
         // This allows sending MODE to new players as the first event of the next frame, before the master's INPUT.
+        CLIENT_LOGF(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", m_frameNumber + 1, m_frameNumber);
         ++m_frameNumber;
       }
 
