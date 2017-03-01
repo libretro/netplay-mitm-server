@@ -153,17 +153,19 @@ void RAMITM::readyRead() {
 
     // after the header we switch to a command-based format
     uint32_t newcmd[2];
-
-    qint64 readBytes = sock->read((char*)newcmd, 8);
-
-    if(readBytes != 8) {
-      CLIENT_LOG(sock, "invalid data received, aborting connection");
-      sock->deleteLater();
-      return;
-    }
-
     uint32_t current_cmd = sock->property("cmd").toUInt();
     uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+    // only look for a new command if we're not currently waiting on more data
+    if(cmd_size == 0) {
+      qint64 readBytes = sock->read((char*)newcmd, 8);
+
+      if(readBytes != 8) {
+        CLIENT_LOG(sock, "invalid data received, aborting connection");
+        sock->deleteLater();
+        return;
+      }
+    }
 
     if(cmd_size > 0) {
       cmd[0] = current_cmd;
