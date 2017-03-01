@@ -162,11 +162,21 @@ void RAMITM::readyRead() {
       return;
     }
 
-    cmd[0] = ntohl(newcmd[0]);
-    cmd[1] = ntohl(newcmd[1]);
+    uint32_t current_cmd = sock->property("cmd").toUInt();
+    uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+    if(cmd_size > 0) {
+      cmd[0] = current_cmd;
+      cmd[1] = cmd_size;
+    }else{
+      cmd[0] = ntohl(newcmd[0]);
+      cmd[1] = ntohl(newcmd[1]);
+    }
 
     if(sock->bytesAvailable() < (qint64)cmd[1]) {
-      CLIENT_LOGF(sock, "WARNING: not enough data, we have %lli bytes available but the command payload size is %u\n", sock->bytesAvailable(), cmd[1]);
+      //CLIENT_LOGF(sock, "WARNING: not enough data, we have %lli bytes available but the command payload size is %u\n", sock->bytesAvailable(), cmd[1]);
+      sock->setProperty("cmd", cmd[0]);
+      sock->setProperty("cmd_size", cmd[1]);
     }
 
     if(state == STATE_NONE) {
@@ -194,11 +204,14 @@ void RAMITM::readyRead() {
         case CMD_INPUT:
           state = STATE_RECV_INPUT;
           break;
+        case CMD_LOAD_SAVE:
+          state = STATE_RECV_LOAD_SAVE;
+          break;
         default:
           break;
       }
 
-      if(cmd[0] != CMD_INPUT) {
+      if(cmd[0] != CMD_INPUT && cmd_size == 0) {
         CLIENT_LOGF(sock, "got command %08X with payload size %u\n", cmd[0], cmd[1]);
       }
     }
@@ -335,7 +348,7 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&m_info, sizeof(m_info.cmd) + info_payload_size);
 
-      CLIENT_LOG(sock, "sent info to host");
+      CLIENT_LOGF(sock, "sent info to host, using core %s\n", m_info.core_name);
 
       if(m_info_set) {
         CLIENT_LOG(sock, "next state is send sync");
@@ -376,7 +389,7 @@ void RAMITM::readyRead() {
         return;
       }
 
-      CLIENT_LOGF(sock, "info: got %lli bytes from %s\n", readBytes, QC_STR(sock->peerAddress().toString()));
+      CLIENT_LOGF(sock, "info: got %lli bytes\n", readBytes);
       CLIENT_LOGF(sock, "info: core name is %s\n", info.core_name);
       CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
       CLIENT_LOGF(sock, "info: content crc is %08X\n", ntohl(info.content_crc));
@@ -451,13 +464,26 @@ void RAMITM::readyRead() {
 
       sock->write((const char *)&sync, sizeof(sync));
 
-      if(m_sockets.indexOf(sock) == 0)
-        m_first_sync_sent = true;
-
       sock->setProperty("state", STATE_NONE);
       sock->setProperty("sync_sent", true);
 
       CLIENT_LOG(sock, "sent sync to host");
+
+      if(m_sockets.indexOf(sock) == 0)
+      {
+        m_first_sync_sent = true;
+      }else{
+        // after any non-master connection is up, request a savestate from the master
+        reqsave_buf_s req;
+        req.cmd[0] = htonl(CMD_REQ_SAVE);
+        req.cmd[1] = htonl(0);
+
+        QTcpSocket *master = m_sockets.at(0);
+
+        master->write((const char *)&req, sizeof(req));
+
+        CLIENT_LOG(sock, "requested savestate from the master");
+      }
 
       break;
     }
@@ -491,12 +517,95 @@ void RAMITM::readyRead() {
           mode.target = htons(2);
         }
 
+        CLIENT_LOGF(sock, "MODE for player %d (0-based):", m_sockets.indexOf(player));
+
+        for(uint i = 0; i < sizeof(mode); ++i) {
+          printf(" %08X", ((char*)&mode)[i]);
+        }
+
+        printf("\n");
+
         player->write((const char *)&mode, sizeof(mode));
       }
 
       CLIENT_LOG(sock, "received PLAY and sent MODE to all users");
 
       sock->setProperty("state", STATE_NONE);
+
+      break;
+    }
+    case STATE_RECV_LOAD_SAVE:
+    {
+      loadsave_buf_s loadsave;
+      size_t loadsave_payload_size = sizeof(loadsave) - sizeof(loadsave.cmd);
+      size_t state_serial_size = cmd[1] - loadsave_payload_size;
+
+      loadsave.cmd[0] = htonl(cmd[0]);
+      loadsave.cmd[1] = htonl(cmd[1]);
+
+      CLIENT_LOGF(sock, "receiving savestate data, total size is %u\n", cmd[1]);
+
+      //uint32_t current_cmd = sock->property("cmd").toUInt();
+      uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+      if(cmd_size > 0) {
+        if(sock->bytesAvailable() < (qint64)cmd_size) {
+          // not enough data available yet, keep waiting
+          CLIENT_LOGF(sock, "recv loadsave: not enough data available, only %lli bytes out of %u\n", sock->bytesAvailable(), cmd_size);
+          return;
+        }
+
+        // don't track command info anymore, we have all the data now
+        sock->setProperty("cmd", 0);
+        sock->setProperty("cmd_size", 0);
+      }else{
+        if(sock->bytesAvailable() < (qint64)cmd[1]) {
+          // Not enough data available yet, but we can't keep waiting.
+          // If we could, the cmd_size property would be set accordingly.
+          // Hopefully this is never reached
+          CLIENT_LOGF(sock, "SHOULD_NOT_SEE_ME recv loadsave: not enough data available, only %lli bytes out of %u, aborting connection\n", sock->bytesAvailable(), cmd[1]);
+          sock->deleteLater();
+          return;
+        }
+      }
+
+      qint64 readBytes = sock->read((char*)&loadsave.frame_num, loadsave_payload_size);
+
+      if(readBytes != (qint64)loadsave_payload_size) {
+        CLIENT_LOGF(sock, "could not read loadsave from client. got %lli bytes when expecting %li, aborting\n", readBytes, loadsave_payload_size);
+        sock->deleteLater();
+        return;
+      }
+
+      char *state = (char*)malloc(state_serial_size);
+
+      // read arbitrary length savestate serialization data
+      readBytes = sock->read((char*)state, state_serial_size);
+
+      if(readBytes != (qint64)state_serial_size) {
+        CLIENT_LOGF(sock, "could not read save state serialization from client. got %lli bytes when expecting %li, aborting\n", readBytes, state_serial_size);
+        sock->deleteLater();
+        return;
+      }
+
+      if(m_sockets.indexOf(sock) != 0) {
+        // only the master should be sending us savestates
+        CLIENT_LOG(sock, "got savestate from a client that wasn't the master");
+        break;
+      }
+
+      CLIENT_LOGF(sock, "successfully received savestate of %lu bytes with original size %u\n", state_serial_size, ntohl(loadsave.orig_size));
+
+      loadsave.frame_num = htonl(m_frameNumber);
+
+      foreach(QTcpSocket *player, m_sockets) {
+        if(player != sock) {
+          // forward the savestate to everyone else
+          player->write((const char *)&loadsave, sizeof(loadsave));
+          player->write((const char *)state, state_serial_size);
+          CLIENT_LOGF(sock, "sent savestate to player %d\n", m_sockets.indexOf(player));
+        }
+      }
 
       break;
     }

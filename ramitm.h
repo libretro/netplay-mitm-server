@@ -18,6 +18,8 @@
 #define CMD_SYNC 0x0023
 #define CMD_PLAY 0x0025
 #define CMD_MODE 0x0026
+#define CMD_REQ_SAVE 0x0041
+#define CMD_LOAD_SAVE 0x0042
 
 struct nick_buf_s {
   uint32_t cmd[2];
@@ -61,6 +63,16 @@ struct noinput_buf_s {
   uint32_t frame_num;
 };
 
+struct reqsave_buf_s {
+  uint32_t cmd[2];
+};
+
+struct loadsave_buf_s {
+  uint32_t cmd[2];
+  uint32_t frame_num;
+  uint32_t orig_size;
+};
+
 enum ClientState {
   STATE_HEADER = 0,
   STATE_SEND_NICKNAME,
@@ -70,7 +82,9 @@ enum ClientState {
   STATE_RECV_INFO,
   STATE_RECV_NICKNAME,
   STATE_RECV_PLAY,
-  STATE_RECV_INPUT
+  STATE_RECV_INPUT,
+  STATE_RECV_REQ_SAVE,
+  STATE_RECV_LOAD_SAVE
 };
 
 class RAMITM : public QObject {
