@@ -690,6 +690,9 @@ void MITM::readyRead() {
       input_buf_s input;
       size_t input_payload_size = sizeof(input) - sizeof(input.cmd);
 
+      input.cmd[0] = htonl(cmd[0]);
+      input.cmd[1] = htonl(cmd[1]);
+
       uint32_t cmd_size = sock->property("cmd_size").toUInt();
 
       if(cmd_size > 0) {
