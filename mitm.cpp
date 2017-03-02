@@ -22,8 +22,10 @@
 
 #include <arpa/inet.h>
 
+#ifdef DEBUG
 static QString getPeerIPv4(QHostAddress addr) {
   struct in_addr ip_addr;
+
   ip_addr.s_addr = addr.toIPv4Address();
 
   return QString(inet_ntoa(ip_addr));
@@ -34,6 +36,10 @@ static QString getPeerIPv4(QHostAddress addr) {
 #define PORT(x) x->peerPort()
 #define CLIENT_LOG(x, y) printf("%s:%d %s\n", QC_STR(HOST(x)), PORT(x), y)
 #define CLIENT_LOGF(x, fmt, ...) printf("%s:%d ", QC_STR(HOST(x)), PORT(x)); printf(fmt, __VA_ARGS__)
+#else
+#define CLIENT_LOG(x, y)
+#define CLIENT_LOGF(x, fmt, ...)
+#endif
 
 size_t strlcpy(char *dest, const char *source, size_t size)
 {
@@ -52,11 +58,16 @@ size_t strlcpy(char *dest, const char *source, size_t size)
 }
 
 static void dump_uints(const char *data, int bytes) {
+#ifdef DEBUG
   for(uint i = 0; i < bytes / sizeof(uint32_t); i++) {
     printf(" %08X", ntohl(((uint32_t*)data)[i]));
   }
 
   printf("\n");
+#else
+  Q_UNUSED(data)
+  Q_UNUSED(bytes)
+#endif
 }
 
 MITM::MITM(QObject *parent) :
@@ -117,13 +128,13 @@ void MITM::sendMODE(QTcpSocket *sock) {
     }
 
     CLIENT_LOGF(sock, "MODE for player %d:", m_sockets.indexOf(player));
-
+#ifdef DEBUG
     for(uint i = 0; i < sizeof(mode) / sizeof(uint32_t); ++i) {
       printf(" %08X", ntohl(((uint32_t*)&mode)[i]));
     }
 
     printf("\n");
-
+#endif
     player->write((const char *)&mode, sizeof(mode));
   }
 
@@ -764,6 +775,7 @@ void MITM::disconnected() {
 
 void MITM::error(QAbstractSocket::SocketError socketError) {
   // NOTE: only attempt a reconnect here if using a 0-timer
+  Q_UNUSED(socketError)
 
   QTcpSocket *sock = static_cast<QTcpSocket*>(sender());
 
