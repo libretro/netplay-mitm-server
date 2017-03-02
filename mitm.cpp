@@ -366,10 +366,18 @@ void MITM::readyRead() {
     {
       struct nick_buf_s nick;
 
-      if(sock->bytesAvailable() < (qint64)sizeof(nick.nick)) {
-        // not enough data available yet, keep waiting
-        CLIENT_LOGF(sock, "recv nick: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), sizeof(nick));
-        return;
+      uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+      if(cmd_size > 0) {
+        if(sock->bytesAvailable() < (qint64)sizeof(nick.nick)) {
+          // not enough data available yet, keep waiting
+          CLIENT_LOGF(sock, "recv nick: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), sizeof(nick));
+          return;
+        }
+
+        // don't track command info anymore, we have all the data now
+        sock->setProperty("cmd", 0);
+        sock->setProperty("cmd_size", 0);
       }
 
       if(cmd[1] != sizeof(nick.nick)) {
@@ -429,10 +437,18 @@ void MITM::readyRead() {
       info.cmd[0] = htonl(cmd[0]);
       info.cmd[1] = htonl(cmd[1]);
 
-      if(sock->bytesAvailable() < (qint64)info_payload_size) {
-        // not enough data available yet, keep waiting
-        CLIENT_LOGF(sock, "recv info: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), info_payload_size);
-        return;
+      uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+      if(cmd_size > 0) {
+        if(sock->bytesAvailable() < (qint64)info_payload_size) {
+          // not enough data available yet, keep waiting
+          CLIENT_LOGF(sock, "recv info: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), info_payload_size);
+          return;
+        }
+
+        // don't track command info anymore, we have all the data now
+        sock->setProperty("cmd", 0);
+        sock->setProperty("cmd_size", 0);
       }
 
       if(cmd[1] != info_payload_size) {
@@ -584,7 +600,6 @@ void MITM::readyRead() {
 
       CLIENT_LOGF(sock, "receiving savestate data, total size is %u\n", cmd[1]);
 
-      //uint32_t current_cmd = sock->property("cmd").toUInt();
       uint32_t cmd_size = sock->property("cmd_size").toUInt();
 
       if(cmd_size > 0) {
@@ -675,10 +690,18 @@ void MITM::readyRead() {
       input_buf_s input;
       size_t input_payload_size = sizeof(input) - sizeof(input.cmd);
 
-      if(sock->bytesAvailable() < (qint64)input_payload_size) {
-        // not enough data available yet, keep waiting
-        CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
-        return;
+      uint32_t cmd_size = sock->property("cmd_size").toUInt();
+
+      if(cmd_size > 0) {
+        if(sock->bytesAvailable() < (qint64)input_payload_size) {
+          // not enough data available yet, keep waiting
+          CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
+          return;
+        }
+
+        // don't track command info anymore, we have all the data now
+        sock->setProperty("cmd", 0);
+        sock->setProperty("cmd_size", 0);
       }
 
       if(cmd[1] != input_payload_size) {
@@ -698,7 +721,9 @@ void MITM::readyRead() {
       if(m_sockets.indexOf(sock) == 0) {
         // this is the first (master) connection
         // server follows the first connection's frame number
-        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), m_frameNumber);
+        //CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), m_frameNumber);
+        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), m_frameNumber);
+        dump_uints((const char *)&input, sizeof(input));
         m_frameNumber = ntohl(input.frame_num);
       }
 
