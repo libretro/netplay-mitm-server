@@ -730,17 +730,22 @@ void MITM::readyRead() {
 
       m_servers.append(server);
 
+      struct newport_buf_s buf;
+      buf.cmd[0] = htonl(CMD_NEW_PORT);
+      buf.cmd[1] = htonl(sizeof(uint32_t));
+
       if(!server->listen(QHostAddress::Any, 0)) {
         printf("could not bind to a random port\n");
-        QCoreApplication::quit();
+
+        buf.port = htonl(0);
+
+        sock->write((const char *)&buf, sizeof(buf));
+
         return;
       }
 
       CLIENT_LOGF(sock, "added port %d\n", server->serverPort());
 
-      struct newport_buf_s buf;
-      buf.cmd[0] = htonl(CMD_NEW_PORT);
-      buf.cmd[1] = htonl(sizeof(uint32_t));
       buf.port = htonl(server->serverPort());
 
       sock->write((const char *)&buf, sizeof(buf));
