@@ -72,7 +72,7 @@ static void dump_uints(const char *data, int bytes) {
 
 MITM::MITM(QObject *parent) :
   QObject(parent)
-  ,m_sock(new QTcpServer(this))
+  ,m_server(new QTcpServer(this))
   ,m_header()
   ,m_info()
   ,m_info_set(false)
@@ -109,8 +109,8 @@ MITM::MITM(QObject *parent) :
   m_getopt.addOption(QCommandLineOption(QStringList() << "m" << "multi", "Multi-server mode. The main port becomes a command interface used to request new ports to be added. Send CMD_REQ_PORT to add a new server."));
   m_getopt.process(*qApp);
 
-  connect(m_sock, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
-  connect(m_sock, SIGNAL(newConnection()), this, SLOT(newConnection()));
+  connect(m_server, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
+  connect(m_server, SIGNAL(newConnection()), this, SLOT(newConnection()));
 }
 
 void MITM::sendMODE(QTcpSocket *sock) {
@@ -153,19 +153,17 @@ void MITM::sendMODE(QTcpSocket *sock) {
 void MITM::start() {
   int port = 55435;
 
-  QStringList args = qApp->arguments();
-
-  if(args.contains("-port")) {
-    port = args.at(args.indexOf("-port") + 1).toInt();
+  if(m_getopt.isSet("port")) {
+    port = m_getopt.value("port").toInt();
   }
 
-  if(!m_sock->listen(QHostAddress::Any, port)) {
+  if(!m_server->listen(QHostAddress::Any, port)) {
     printf("could not bind to port %d\n", port);
     QCoreApplication::quit();
     return;
   }
 
-  printf("bound to port %d\n", m_sock->serverPort());
+  printf("bound to port %d\n", m_server->serverPort());
 }
 
 void MITM::handleSIGINT(int) {
@@ -203,7 +201,7 @@ void MITM::newConnection() {
 
   sock->setProperty("server", ptr);
 
-  if(m_getopt.isSet("multi"))
+  if(m_getopt.isSet("multi") && server == m_server)
     sock->setProperty("state", STATE_NONE);
 
   m_sockets.append(sock);
@@ -721,6 +719,12 @@ void MITM::readyRead() {
       if(cmd[1] > 0)
         sock->read(cmd[1]);
 
+      // don't track command info anymore, we have all the data now
+      sock->setProperty("cmd", 0);
+      sock->setProperty("cmd_size", 0);
+
+      sock->setProperty("state", STATE_NONE);
+
       if(!m_getopt.isSet("multi"))
         break;
 
@@ -890,7 +894,7 @@ void MITM::disconnected() {
     }
   }
 
-  if(!found && server != m_sock) {
+  if(!found && server != m_server) {
     CLIENT_LOGF(sock, "removing server at port %d\n", server->serverPort());
 
     m_servers.removeOne(server);

@@ -133,7 +133,7 @@ private slots:
 private:
   void sendMODE(QTcpSocket *sock);
 
-  QTcpServer *m_sock;
+  QTcpServer *m_server;
   char m_header[HEADER_LEN];
   info_buf_s m_info;
   bool m_info_set;
