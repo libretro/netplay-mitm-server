@@ -78,7 +78,6 @@ MITM::MITM(QObject *parent) :
   ,m_info_set(false)
   ,m_first_sync_sent(false)
   ,m_sockets()
-  ,m_frameNumber(0)
   ,m_servers()
   ,m_getopt()
 {
@@ -121,7 +120,11 @@ void MITM::sendMODE(QTcpSocket *sock) {
   mode.cmd[0] = htonl(CMD_MODE);
   mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
 
-  mode.frame_num = htonl(m_frameNumber);
+  QTcpServer *server = static_cast<QTcpServer*>(sock->property("server").value<void*>());
+
+  uint frameNumber = server->property("frame_count").toUInt();
+
+  mode.frame_num = htonl(frameNumber);
   mode.player_num = htons(m_sockets.indexOf(sock));
 
   foreach(QTcpSocket *player, m_sockets) {
@@ -561,8 +564,12 @@ void MITM::readyRead() {
         sync.players |= 1U << i;
       }
 
+      QTcpServer *server = static_cast<QTcpServer*>(sock->property("server").value<void*>());
+
+      uint frameNumber = server->property("frame_count").toUInt();
+
       sync.players = htonl(sync.players);
-      sync.frame_num = htonl(m_frameNumber);
+      sync.frame_num = htonl(frameNumber);
       sync.devices[0] = htonl(1);
       sync.devices[1] = htonl(1);
 
@@ -681,10 +688,11 @@ void MITM::readyRead() {
       QTcpSocket *master = m_sockets.at(0);
       master->setProperty("savestate_pending", false);
 
-      //loadsave.frame_num = htonl(m_frameNumber);
-      m_frameNumber = ntohl(loadsave.frame_num);
+      QTcpServer *server = static_cast<QTcpServer*>(sock->property("server").value<void*>());
 
-      CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", m_frameNumber);
+      uint frameNumber = ntohl(loadsave.frame_num);
+
+      CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", frameNumber);
 
       foreach(QTcpSocket *player, m_sockets) {
         if(player != sock) {
@@ -705,10 +713,11 @@ void MITM::readyRead() {
         }
       }
 
-      CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", m_frameNumber + 1, m_frameNumber);
+      CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
 
-      ++m_frameNumber;
+      ++frameNumber;
 
+      server->setProperty("frame_count", frameNumber);
       sock->setProperty("state", STATE_NONE);
 
       break;
@@ -792,13 +801,17 @@ void MITM::readyRead() {
         return;
       }
 
+      QTcpServer *server = static_cast<QTcpServer*>(sock->property("server").value<void*>());
+
+      uint frameNumber = server->property("frame_count").toUInt();
+
       if(m_sockets.indexOf(sock) == 0) {
         // this is the first (master) connection
         // server follows the first connection's frame number
-        //CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), m_frameNumber);
-        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), m_frameNumber);
+        //CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), frameNumber);
+        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), frameNumber);
         dump_uints((const char *)&input, sizeof(input));
-        m_frameNumber = ntohl(input.frame_num);
+        frameNumber = ntohl(input.frame_num);
       }
 
       // server is transparent, so we send NOINPUT back to all the clients to tell them we aren't sending it any input ourselves
@@ -806,7 +819,7 @@ void MITM::readyRead() {
       noinput_buf_s noinput;
       noinput.cmd[0] = htonl(CMD_NOINPUT);
       noinput.cmd[1] = htonl(sizeof(noinput) - sizeof(noinput.cmd));
-      noinput.frame_num = htonl(m_frameNumber);
+      noinput.frame_num = htonl(frameNumber);
 
       // forward this INPUT to everyone else, and send NOINPUT to everyone
       foreach(QTcpSocket *player, m_sockets) {
@@ -825,8 +838,8 @@ void MITM::readyRead() {
         }
       }
 
-      /*if(m_frameNumber % 100 == 0) {
-        CLIENT_LOGF(sock, "received INPUT and sent NOINPUT %u\n", m_frameNumber);
+      /*if(frameNumber % 100 == 0) {
+        CLIENT_LOGF(sock, "received INPUT and sent NOINPUT %u\n", frameNumber);
       }*/
 
       sock->setProperty("state", STATE_NONE);
@@ -835,9 +848,11 @@ void MITM::readyRead() {
       {
         // Increment server frame number ahead of master client sending a new INPUT with the same frame number.
         // This allows sending MODE to new players as the first event of the next frame, before the master's INPUT.
-        CLIENT_LOGF(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", m_frameNumber + 1, m_frameNumber);
-        ++m_frameNumber;
+        CLIENT_LOGF(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
+        ++frameNumber;
       }
+
+      server->setProperty("frame_count", frameNumber);
 
       break;
     }

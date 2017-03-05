@@ -139,7 +139,6 @@ private:
   bool m_info_set;
   bool m_first_sync_sent;
   QList<QTcpSocket*> m_sockets;
-  uint m_frameNumber;
   QList<QTcpServer*> m_servers;
   QCommandLineParser m_getopt;
 };
