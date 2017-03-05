@@ -1,0 +1,14 @@
+[Unit]
+Description=RetroArch MITM Server
+After=network.target
+
+[Service]
+ExecStart=/home/lobby/netplay-mitm-server/mitm -m
+KillMode=process
+Restart=on-failure
+Type=simple
+User=lobby
+Group=lobby
+
+[Install]
+WantedBy=multi-user.target
