@@ -18,6 +18,8 @@
 
 int main(int argc, char *argv[]) {
   QCoreApplication app(argc, argv);
+  app.setApplicationName("netplay-mitm-server");
+  app.setApplicationVersion("1.0");
 
   MITM mitm;
   mitm.start();

@@ -36,6 +36,10 @@
 #define CMD_REQ_SAVE 0x0041
 #define CMD_LOAD_SAVE 0x0042
 
+// custom commands not part of RetroArch
+#define CMD_REQ_PORT 0x4649
+#define CMD_NEW_PORT 0x464a
+
 struct nick_buf_s {
   uint32_t cmd[2];
   char nick[NICK_LEN];
@@ -88,6 +92,11 @@ struct loadsave_buf_s {
   uint32_t orig_size;
 };
 
+struct newport_buf_s {
+  uint32_t cmd[2];
+  uint32_t port;
+};
+
 enum ClientState {
   STATE_HEADER = 0,
   STATE_SEND_NICKNAME,
@@ -99,7 +108,8 @@ enum ClientState {
   STATE_RECV_PLAY,
   STATE_RECV_INPUT,
   STATE_RECV_REQ_SAVE,
-  STATE_RECV_LOAD_SAVE
+  STATE_RECV_LOAD_SAVE,
+  STATE_RECV_REQ_PORT
 };
 
 class MITM : public QObject {
@@ -130,6 +140,8 @@ private:
   bool m_first_sync_sent;
   QList<QTcpSocket*> m_sockets;
   uint m_frameNumber;
+  QList<QTcpServer*> m_servers;
+  QCommandLineParser m_getopt;
 };
 
 #endif // __MITM_H

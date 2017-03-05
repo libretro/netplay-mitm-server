@@ -79,6 +79,8 @@ MITM::MITM(QObject *parent) :
   ,m_first_sync_sent(false)
   ,m_sockets()
   ,m_frameNumber(0)
+  ,m_servers()
+  ,m_getopt()
 {
   memset(&m_info, 0, sizeof(m_info));
 
@@ -99,6 +101,13 @@ MITM::MITM(QObject *parent) :
 
   sigaction(SIGTERM, &sigterm, 0);
 #endif
+
+  m_getopt.setApplicationDescription("Netplay man-in-the-middle server for RetroArch");
+  m_getopt.addHelpOption();
+  m_getopt.addVersionOption();
+  m_getopt.addOption(QCommandLineOption(QStringList() << "p" << "port", "Port to listen on, default is 55435.", "port"));
+  m_getopt.addOption(QCommandLineOption(QStringList() << "m" << "multi", "Multi-server mode. The main port becomes a command interface used to request new ports to be added. Send CMD_REQ_PORT to add a new server."));
+  m_getopt.process(*qApp);
 
   connect(m_sock, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
   connect(m_sock, SIGNAL(newConnection()), this, SLOT(newConnection()));
@@ -174,10 +183,28 @@ void MITM::acceptError(QAbstractSocket::SocketError socketError) {
 }
 
 void MITM::newConnection() {
-  QTcpSocket *sock = m_sock->nextPendingConnection();
+  QTcpServer *server = static_cast<QTcpServer*>(sender());
 
-  if(!sock)
+  if (!server) {
+    printf("could not find server for new connection\n");
+    QCoreApplication::quit();
     return;
+  }
+
+  QTcpSocket *sock = server->nextPendingConnection();
+
+  if(!sock) {
+    printf("could not find socket for new connection\n");
+    QCoreApplication::quit();
+    return;
+  }
+
+  QVariant ptr = qVariantFromValue((void*)server);
+
+  sock->setProperty("server", ptr);
+
+  if(m_getopt.isSet("multi"))
+    sock->setProperty("state", STATE_NONE);
 
   m_sockets.append(sock);
 
@@ -266,6 +293,9 @@ void MITM::readyRead() {
           break;
         case CMD_LOAD_SAVE:
           state = STATE_RECV_LOAD_SAVE;
+          break;
+        case CMD_REQ_PORT:
+          state = STATE_RECV_REQ_PORT;
           break;
         default:
           break;
@@ -685,6 +715,38 @@ void MITM::readyRead() {
 
       break;
     }
+    case STATE_RECV_REQ_PORT:
+    {
+      // ignore any payload
+      if(cmd[1] > 0)
+        sock->read(cmd[1]);
+
+      if(!m_getopt.isSet("multi"))
+        break;
+
+      QTcpServer *server = new QTcpServer(this);
+      connect(server, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
+      connect(server, SIGNAL(newConnection()), this, SLOT(newConnection()));
+
+      m_servers.append(server);
+
+      if(!server->listen(QHostAddress::Any, 0)) {
+        printf("could not bind to a random port\n");
+        QCoreApplication::quit();
+        return;
+      }
+
+      CLIENT_LOGF(sock, "added port %d\n", server->serverPort());
+
+      struct newport_buf_s buf;
+      buf.cmd[0] = htonl(CMD_NEW_PORT);
+      buf.cmd[1] = htonl(sizeof(uint32_t));
+      buf.port = htonl(server->serverPort());
+
+      sock->write((const char *)&buf, sizeof(buf));
+
+      break;
+    }
     case STATE_RECV_INPUT:
     {
       input_buf_s input;
@@ -794,11 +856,42 @@ void MITM::disconnected() {
   if(!sock)
     return;
 
+  QTcpServer *server = static_cast<QTcpServer*>(sock->property("server").value<void*>());
+
+  if(!server) {
+    printf("could not find server for previous connection\n");
+    QCoreApplication::quit();
+    return;
+  }
+
   m_sockets.removeOne(sock);
 
   CLIENT_LOG(sock, "client disconnected");
 
   sock->deleteLater();
+
+  bool found = false;
+
+  // if this was the last connection on a game port, kill the server
+  foreach(QTcpSocket *socket, m_sockets) {
+    QTcpServer *player_server = static_cast<QTcpServer*>(socket->property("server").value<void*>());
+
+    if(!player_server)
+      continue;
+
+    if(player_server == server) {
+      found = true;
+      break;
+    }
+  }
+
+  if(!found && server != m_sock) {
+    CLIENT_LOGF(sock, "removing server at port %d\n", server->serverPort());
+
+    m_servers.removeOne(server);
+    server->close();
+    server->deleteLater();
+  }
 }
 
 void MITM::error(QAbstractSocket::SocketError socketError) {
