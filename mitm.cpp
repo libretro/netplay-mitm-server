@@ -360,7 +360,7 @@ void MITM::readyRead() {
         CLIENT_LOGF(sock, "SVR header: %08X %08X %08X %08X\n", m_header[0], m_header[1], m_header[2], m_header[3]);
         CLIENT_LOGF(sock, "CLT header: %08X %08X %08X %08X\n", header[0], header[1], header[2], header[3]);
 
-        if(memcmp(header, m_header, HEADER_LEN)) {
+        if(!memcmp(header, m_header, HEADER_LEN)) {
           // header did not match the first connection
           CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
