@@ -97,6 +97,15 @@ struct newport_buf_s {
   uint32_t port;
 };
 
+struct Server {
+  bool operator==(const Server &other) {
+    return server == other.server;
+  }
+
+  QTcpServer *server;
+  QList<QTcpSocket*> sockets;
+};
+
 enum ClientState {
   STATE_HEADER = 0,
   STATE_SEND_NICKNAME,
@@ -134,13 +143,10 @@ private:
   void sendMODE(QTcpSocket *sock);
 
   QTcpServer *m_server;
-  char m_header[HEADER_LEN];
-  info_buf_s m_info;
-  bool m_info_set;
-  bool m_first_sync_sent;
-  QList<QTcpSocket*> m_sockets;
-  QList<QTcpServer*> m_servers;
+  QList<Server> m_servers;
   QCommandLineParser m_getopt;
 };
+
+Q_DECLARE_METATYPE(info_buf_s)
 
 #endif // __MITM_H
