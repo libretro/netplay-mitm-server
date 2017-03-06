@@ -387,10 +387,18 @@ void MITM::readyRead() {
           return;
         }
 
-        CLIENT_LOGF(sock, "SVR header: %08X %08X %08X %08X\n", server_header.at(0), server_header.at(1), server_header.at(2), server_header.at(3));
-        CLIENT_LOGF(sock, "CLT header: %08X %08X %08X %08X\n", header[0], header[1], header[2], header[3]);
+        const char *server_header_data = server_header.constData();
 
-        if(memcmp(header, server_header.constData(), HEADER_LEN)) {
+        CLIENT_LOGF(sock, "SVR header: %08X %08X %08X %08X\n", ((uint*)server_header_data)[0], ((uint*)server_header_data)[1], ((uint*)server_header_data)[2], ((uint*)server_header_data)[3]);
+        CLIENT_LOGF(sock, "CLT header: %08X %08X %08X %08X\n", ((uint*)header)[0], ((uint*)header)[1], ((uint*)header)[2], ((uint*)header)[3]);
+
+        // word1 is the platform info, and they're allowed to be different, so don't check it
+        bool word0 = memcmp(header + sizeof(uint32_t) * 0, server_header_data + sizeof(uint32_t) * 0, sizeof(uint32_t));
+        //bool word1 = memcmp(header + sizeof(uint32_t) * 1, server_header_data + sizeof(uint32_t) * 1, sizeof(uint32_t));
+        bool word2 = memcmp(header + sizeof(uint32_t) * 2, server_header_data + sizeof(uint32_t) * 2, sizeof(uint32_t));
+        bool word3 = memcmp(header + sizeof(uint32_t) * 3, server_header_data + sizeof(uint32_t) * 3, sizeof(uint32_t));
+
+        if(word0 || word2 || word3) {
           // header did not match the first connection
           CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
@@ -550,7 +558,14 @@ void MITM::readyRead() {
         }
       }else if(sockets.indexOf(sock) > 0) {
         // make sure other clients have the same INFO
-        if(!memcmp(&server_info, &info, sizeof(info))) {
+        int info_mismatched = 0;
+
+        info_mismatched |= memcmp(&server_info.core_name, &info.core_name, sizeof(info.core_name));
+        // NOTE: ignore core version checking for now
+        //info_matches |= memcmp(&server_info.core_version, &info.core_version, sizeof(info.core_version));
+        info_mismatched |= memcmp(&server_info.content_crc, &info.content_crc, sizeof(info.content_crc));
+
+        if(!info_mismatched) {
           // info matches
           CLIENT_LOG(sock, "info matches");
           sock->setProperty("state", STATE_NONE);
