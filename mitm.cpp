@@ -36,9 +36,20 @@ static QString getPeerIPv4(QHostAddress addr) {
 #define PORT(x) x->peerPort()
 #define CLIENT_LOG(x, y) printf("%s:%d %s\n", QC_STR(HOST(x)), PORT(x), y)
 #define CLIENT_LOGF(x, fmt, ...) printf("%s:%d ", QC_STR(HOST(x)), PORT(x)); printf(fmt, __VA_ARGS__)
+
+#if DEBUG == 2
+#define CLIENT_LOG2(x, y) CLIENT_LOG(x, y)
+#define CLIENT_LOGF2(x, fmt, ...) CLIENT_LOGF(x, fmt, __VA_ARGS__)
+#else
+#define CLIENT_LOG2(x, y)
+#define CLIENT_LOGF2(x, fmt, ...)
+#endif
+
 #else
 #define CLIENT_LOG(x, y)
+#define CLIENT_LOG2(x, y)
 #define CLIENT_LOGF(x, fmt, ...)
+#define CLIENT_LOGF2(x, fmt, ...)
 #endif
 
 size_t strlcpy(char *dest, const char *source, size_t size)
@@ -58,7 +69,7 @@ size_t strlcpy(char *dest, const char *source, size_t size)
 }
 
 static void dump_uints(const char *data, int bytes) {
-#ifdef DEBUG
+#if DEBUG == 2
   for(uint i = 0; i < bytes / sizeof(uint32_t); i++) {
     printf(" %08X", ntohl(((uint32_t*)data)[i]));
   }
@@ -868,8 +879,7 @@ void MITM::readyRead() {
       if(sockets.indexOf(sock) == 0) {
         // this is the first (master) connection
         // server follows the first connection's frame number
-        //CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)\n", ntohl(input.frame_num), frameNumber);
-        CLIENT_LOGF(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), frameNumber);
+        CLIENT_LOGF2(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), frameNumber);
         dump_uints((const char *)&input, sizeof(input));
         frameNumber = ntohl(input.frame_num);
       }
@@ -891,16 +901,12 @@ void MITM::readyRead() {
 
           if(sockets.indexOf(sock) == 0) {
             // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
-            CLIENT_LOGF(sock, "sending NOINPUT to player %d:", sockets.indexOf(player));
+            CLIENT_LOGF2(sock, "sending NOINPUT to player %d:", sockets.indexOf(player));
             dump_uints((const char *)&noinput, sizeof(noinput));
             player->write((const char *)&noinput, sizeof(noinput));
           }
         }
       }
-
-      /*if(frameNumber % 100 == 0) {
-        CLIENT_LOGF(sock, "received INPUT and sent NOINPUT %u\n", frameNumber);
-      }*/
 
       sock->setProperty("state", STATE_NONE);
 
@@ -908,7 +914,7 @@ void MITM::readyRead() {
       {
         // Increment server frame number ahead of master client sending a new INPUT with the same frame number.
         // This allows sending MODE to new players as the first event of the next frame, before the master's INPUT.
-        CLIENT_LOGF(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
+        CLIENT_LOGF2(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
         ++frameNumber;
       }
 
