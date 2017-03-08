@@ -478,6 +478,8 @@ void MITM::readyRead() {
 
       CLIENT_LOGF(sock, "nick is %s\n", nick.nick);
 
+      sock->setProperty("nick", nick.nick);
+
       sock->setProperty("state", STATE_SEND_INFO);
 
       // force sending of INFO without waiting for new data
@@ -633,6 +635,11 @@ void MITM::readyRead() {
       sync.frame_num = htonl(frameNumber);
       sync.devices[0] = htonl(1);
       sync.devices[1] = htonl(1);
+
+      QByteArray nick = sock->property("nick").toByteArray();
+      const char *nick_data = nick.constData();
+
+      strlcpy(sync.nick, nick_data, sizeof(sync.nick));
 
       sock->write((const char *)&sync, sizeof(sync));
 
