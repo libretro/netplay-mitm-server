@@ -138,6 +138,7 @@ private slots:
   void readyRead();
   void disconnected();
   void error(QAbstractSocket::SocketError socketError);
+  void timeout();
 
 private:
   void sendMODE(QTcpSocket *sock);
@@ -145,6 +146,7 @@ private:
   QTcpServer *m_server;
   QList<Server> m_servers;
   QCommandLineParser m_getopt;
+  QTimer m_timer;
 };
 
 Q_DECLARE_METATYPE(info_buf_s)

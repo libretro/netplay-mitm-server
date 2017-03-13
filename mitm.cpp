@@ -52,6 +52,8 @@ static QString getPeerIPv4(QHostAddress addr) {
 #define CLIENT_LOGF2(x, fmt, ...)
 #endif
 
+#define PORT_EXPIRE_TIMEOUT_SECS 3600
+
 size_t strlcpy(char *dest, const char *source, size_t size)
 {
   size_t src_size = 0;
@@ -86,6 +88,7 @@ MITM::MITM(QObject *parent) :
   ,m_server(new QTcpServer(this))
   ,m_servers()
   ,m_getopt()
+  ,m_timer()
 {
 #ifdef Q_OS_UNIX
   struct sigaction sigint, sigterm;
@@ -114,6 +117,9 @@ MITM::MITM(QObject *parent) :
 
   connect(m_server, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
   connect(m_server, SIGNAL(newConnection()), this, SLOT(newConnection()));
+  connect(&m_timer, SIGNAL(timeout()), this, SLOT(timeout()));
+
+  m_server->setProperty("master", true);
 
   Server s;
   s.server = m_server;
@@ -178,6 +184,32 @@ void MITM::start() {
   }
 
   printf("bound to port %d\n", m_server->serverPort());
+
+  m_timer.start(PORT_EXPIRE_TIMEOUT_SECS * 1000);
+}
+
+void MITM::timeout() {
+  printf("checking for expired ports...\n");
+
+  QMutableListIterator<Server> i(m_servers);
+
+  while(i.hasNext()) {
+    Server &server = i.next();
+    qint64 now = QDateTime::currentMSecsSinceEpoch() / 1000;
+    qint64 last_updated = server.server->property("updated").toLongLong();
+
+    if(now - last_updated > PORT_EXPIRE_TIMEOUT_SECS) {
+      bool master = server.server->property("master").toBool();
+
+      if(!master) {
+        printf("expiring old port %d\n", server.server->serverPort());
+
+        server.server->close();
+        server.server->deleteLater();
+        i.remove();
+      }
+    }
+  }
 }
 
 void MITM::handleSIGINT(int) {
@@ -234,6 +266,9 @@ void MITM::newConnection() {
   }
 
   sockets.append(sock);
+
+  qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
+  server->setProperty("updated", epoch);
 
   sock->setProperty("server", server_index);
 
@@ -817,6 +852,11 @@ void MITM::readyRead() {
       server->setProperty("info", QVariant::fromValue(info));
       server->setProperty("info_set", false);
       server->setProperty("first_sync_sent", false);
+      server->setProperty("master", false);
+
+      qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
+      server->setProperty("created", epoch);
+      server->setProperty("updated", epoch);
 
       Server server_s;
       server_s.server = server;
@@ -837,7 +877,7 @@ void MITM::readyRead() {
         return;
       }
 
-      CLIENT_LOGF(sock, "added port %d\n", server->serverPort());
+      printf("added port %d\n", server->serverPort());
 
       buf.port = htonl(server->serverPort());
 
@@ -963,6 +1003,9 @@ void MITM::disconnected() {
     return;
   }
 
+  qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
+  server->setProperty("updated", epoch);
+
   sockets.removeOne(sock);
 
   CLIENT_LOG(sock, "client disconnected");
@@ -988,9 +1031,9 @@ void MITM::disconnected() {
   if(!found && server != m_server) {
     CLIENT_LOGF(sock, "removing server at port %d\n", server->serverPort());
 
-    m_servers.removeOne(server_s);
     server->close();
     server->deleteLater();
+    m_servers.removeOne(server_s);
   }
 }
 
