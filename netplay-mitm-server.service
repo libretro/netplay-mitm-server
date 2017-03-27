@@ -5,7 +5,8 @@ After=network.target
 [Service]
 ExecStart=/home/lobby/netplay-mitm-server/mitm -m
 KillMode=process
-Restart=on-failure
+Restart=always
+RestartSec=5
 Type=simple
 User=lobby
 Group=lobby
