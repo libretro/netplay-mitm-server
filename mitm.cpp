@@ -965,7 +965,10 @@ void MITM::readyRead() {
         ++frameNumber;
       }
 
+      qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
+
       server->setProperty("frame_count", frameNumber);
+      server->setProperty("updated", epoch);
 
       break;
     }
