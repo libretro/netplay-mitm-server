@@ -1014,30 +1014,6 @@ void MITM::disconnected() {
   CLIENT_LOG(sock, "client disconnected");
 
   sock->deleteLater();
-
-  bool found = false;
-
-  // if this was the last connection on a game port, kill the server
-  foreach(QTcpSocket *socket, sockets) {
-    const Server &player_server_s = m_servers.at(socket->property("server").toInt());
-    QTcpServer *player_server = player_server_s.server;
-
-    if(!player_server)
-      continue;
-
-    if(player_server == server) {
-      found = true;
-      break;
-    }
-  }
-
-  if(!found && server != m_server) {
-    CLIENT_LOGF(sock, "removing server at port %d\n", server->serverPort());
-
-    server->close();
-    server->deleteLater();
-    m_servers.removeOne(server_s);
-  }
 }
 
 void MITM::error(QAbstractSocket::SocketError socketError) {
