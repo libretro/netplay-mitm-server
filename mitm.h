@@ -18,6 +18,7 @@
 
 #include <QObject>
 #include <QtNetwork>
+#include <QCommandLineParser>
 #include <inttypes.h>
 
 #define HEADER_LEN 16
