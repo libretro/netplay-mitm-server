@@ -21,8 +21,15 @@
 #include <QCommandLineParser>
 #include <inttypes.h>
 
+#define NETPLAY_MAGIC					0x52414E50
+#define NETPLAY_VERSION_FIRST			4
+#define NETPLAY_VERSION_INPUT_UPGRADE 	5
+#define NETPLAY_VERSION_LAST			NETPLAY_VERSION_INPUT_UPGRADE
+
 #define HEADER_LEN 16
+#define POST_HEADER_LEN 8
 #define NICK_LEN 32
+#define MAX_CLIENTS 32
 
 #define CMD_ACK 0x0000
 #define CMD_NACK 0x0001
@@ -53,7 +60,7 @@ struct info_buf_s {
   uint32_t content_crc;
 };
 
-struct sync_buf_s {
+struct sync_buf_pre5_s {
   uint32_t cmd[2];
   uint32_t frame_num;
   uint32_t players; // high bit == paused?
@@ -62,20 +69,38 @@ struct sync_buf_s {
   char nick[32];
 };
 
-struct mode_buf_s {
+struct sync_buf_s {
+  uint32_t cmd[2];
+  uint32_t frame_num;
+  uint32_t client_num; // high bit == paused?
+  uint32_t devices[16];
+  uint8_t share_modes[16];
+  uint32_t d_c_mapping[16];
+  char nick[32];
+};
+
+struct mode_buf_pre5_s {
   uint32_t cmd[2];
   uint32_t frame_num;
   uint16_t target;
   uint16_t player_num;
 };
 
+struct mode_buf_s {
+  uint32_t cmd[2];
+  uint32_t frame_num;
+  uint16_t target;
+  uint16_t client_num;
+  uint32_t devices;
+  uint8_t share_modes[16];
+  char nick[32];
+};
+
 struct input_buf_s {
   uint32_t cmd[2];
   uint32_t frame_num;
   uint32_t player; // high bit == is server data
-  uint32_t joypad_input;
-  uint32_t analog1_input;
-  uint32_t analog2_input;
+  uint32_t data[32]; // actual size will be less
 };
 
 struct noinput_buf_s {
@@ -103,12 +128,14 @@ struct Server {
     return server == other.server;
   }
 
+  uint32_t version;
   QTcpServer *server;
   QList<QTcpSocket*> sockets;
 };
 
 enum ClientState {
   STATE_HEADER = 0,
+  STATE_POST_HEADER, // Due to header format changing, we read as two parts
   STATE_SEND_NICKNAME,
   STATE_SEND_INFO,
   STATE_SEND_SYNC,

@@ -128,21 +128,35 @@ MITM::MITM(QObject *parent) :
 }
 
 void MITM::sendMODE(QTcpSocket *sock) {
-  mode_buf_s mode;
+  union {
+    mode_buf_pre5_s mode_pre5;
+    mode_buf_s mode;
+  };
+  size_t mode_size;
+  const Server &server_s = m_servers.at(sock->property("server").toInt());
 
-  memset(&mode, 0, sizeof(mode));
+  if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+    mode_size = sizeof(mode);
+  else
+    mode_size = sizeof(mode_pre5);
+
+  memset(&mode_pre5, 0, mode_size);
 
   mode.cmd[0] = htonl(CMD_MODE);
-  mode.cmd[1] = htonl(sizeof(mode) - sizeof(mode.cmd));
+  mode.cmd[1] = htonl(mode_size - sizeof(mode_pre5.cmd));
 
-  const Server &server_s = m_servers.at(sock->property("server").toInt());
   const QTcpServer *server = server_s.server;
   const QList<QTcpSocket*> &sockets = server_s.sockets;
 
   uint frameNumber = server->property("frame_count").toUInt();
 
   mode.frame_num = htonl(frameNumber);
-  mode.player_num = htons(sockets.indexOf(sock));
+  if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+    mode.client_num = htons(sockets.indexOf(sock)+1);
+    mode.devices = htonl(1U<<sockets.indexOf(sock));
+  } else {
+    mode_pre5.player_num = htons(sockets.indexOf(sock));
+  }
 
   foreach(QTcpSocket *player, sockets) {
     if(!player->property("sync_sent").toBool()) {
@@ -150,21 +164,29 @@ void MITM::sendMODE(QTcpSocket *sock) {
       continue;
     }
 
-    if(player == sock) {
-      mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
-    }else{
-      mode.target = htons(2);
+    if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+      if (player == sock) {
+        mode.target = htons(1U<<15|1U<<14);
+      } else {
+        mode.target = htons(1U<<14);
+      }
+    } else {
+      if(player == sock) {
+        mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+      }else{
+        mode.target = htons(2);
+      }
     }
 
     CLIENT_LOGF(sock, "MODE for player %d:", sockets.indexOf(player));
 #ifdef DEBUG
-    for(uint i = 0; i < sizeof(mode) / sizeof(uint32_t); ++i) {
-      printf(" %08X", ntohl(((uint32_t*)&mode)[i]));
+    for(uint i = 0; i < sizeof(mode_pre5) / sizeof(uint32_t); ++i) {
+      printf(" %08X", ntohl(((uint32_t*)&mode_pre5)[i]));
     }
 
     printf("\n");
 #endif
-    player->write((const char *)&mode, sizeof(mode));
+    player->write((const char *)&mode, mode_size);
   }
 
   CLIENT_LOG(sock, "sent MODE to all users");
@@ -290,7 +312,7 @@ void MITM::readyRead() {
     return;
   }
 
-  Server server_s = m_servers[sock->property("server").toInt()];
+  Server &server_s = m_servers[sock->property("server").toInt()];
   QTcpServer *server = server_s.server;
   QList<QTcpSocket*> &sockets = server_s.sockets;
   ClientState state = static_cast<ClientState>(sock->property("state").toUInt());
@@ -391,7 +413,10 @@ void MITM::readyRead() {
           CLIENT_LOGF(sock, "header: not enough data available, only %lli bytes out of %d\n", sock->bytesAvailable(), HEADER_LEN);
           return;
         }else{
-          char header[HEADER_LEN];
+          union {
+            char header[HEADER_LEN];
+            uint32_t headerMagic;
+          };
 
           qint64 readBytes = sock->read(header, HEADER_LEN);
 
@@ -402,6 +427,14 @@ void MITM::readyRead() {
           }
 
           CLIENT_LOGF(sock, "header: got %lli bytes\n", readBytes);
+
+          // check if it's a header for version >= 5
+          if (ntohl(headerMagic) == NETPLAY_MAGIC) {
+            server_s.version = NETPLAY_VERSION_INPUT_UPGRADE;
+          } else {
+            // We don't know the exact version, but all earlier versions are the same to us
+            server_s.version = NETPLAY_VERSION_FIRST;
+          }
 
           // store the first client's header to use for all others
           server->setProperty("header", QByteArray(header, HEADER_LEN));
@@ -445,6 +478,89 @@ void MITM::readyRead() {
         bool word3 = memcmp(header + sizeof(uint32_t) * 3, server_header_data + sizeof(uint32_t) * 3, sizeof(uint32_t));
 
         if(word0 || word2 || word3) {
+          // header did not match the first connection
+          CLIENT_LOG(sock, "header did not match the first connection, aborting");
+          sock->deleteLater();
+          return;
+        }else{
+          CLIENT_LOG(sock, "header matches");
+        }
+      }
+
+      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+        sock->setProperty("state", STATE_POST_HEADER); // We still have more header
+      else
+        sock->setProperty("state", STATE_SEND_NICKNAME);
+
+      break;
+    }
+    case STATE_POST_HEADER:
+    {
+      // FIXME: This code is almost identical to STATE_HEADER, can probably be refactored
+      // FIXME 2: This reqiures exact match, but direct connections are now looser.
+      if(sockets.indexOf(sock) == 0) {
+        if(sock->bytesAvailable() < POST_HEADER_LEN) {
+          // not enough data available yet, keep waiting
+          CLIENT_LOGF(sock, "post header: not enough data available, only %lli bytes out of %d\n", sock->bytesAvailable(), POST_HEADER_LEN);
+          return;
+        }else{
+          union {
+            char header[POST_HEADER_LEN];
+            uint32_t rawProtocolVersion;
+          };
+          uint32_t protocolVersion;
+
+          qint64 readBytes = sock->read(header, POST_HEADER_LEN);
+
+          if(readBytes != POST_HEADER_LEN) {
+            CLIENT_LOG(sock, "no header received, aborting connection");
+            sock->deleteLater();
+            return;
+          }
+
+          CLIENT_LOGF(sock, "post header: got %lli bytes\n", readBytes);
+
+          // check if it's a header for version >= 5
+          protocolVersion = ntohl(rawProtocolVersion);
+          if (protocolVersion >= NETPLAY_VERSION_INPUT_UPGRADE && protocolVersion <= NETPLAY_VERSION_LAST)
+            server_s.version = protocolVersion;
+
+          // store the first client's header to use for all others
+          server->setProperty("post_header", QByteArray(header, POST_HEADER_LEN));
+        }
+      }
+
+      QByteArray server_header = server->property("post_header").toByteArray();
+
+      // send header to client, we already have the first connection's header at this point
+      qint64 wroteBytes = sock->write(server_header);
+
+      if(wroteBytes != POST_HEADER_LEN) {
+        CLIENT_LOG(sock, "could not send header to client, aborting connection");
+        sock->deleteLater();
+        return;
+      }else{
+        CLIENT_LOG(sock, "sent header to client");
+      }
+
+      if(sockets.count() > 1) {
+        // read connection header back and verify it is the same as the first client
+        char header[POST_HEADER_LEN];
+
+        qint64 readBytes = sock->read(header, POST_HEADER_LEN);
+
+        if(readBytes != POST_HEADER_LEN) {
+          CLIENT_LOG(sock, "no header received, aborting connection");
+          sock->deleteLater();
+          return;
+        }
+
+        const char *server_header_data = server_header.constData();
+
+        bool word0 = memcmp(header + sizeof(uint32_t) * 0, server_header_data + sizeof(uint32_t) * 0, sizeof(uint32_t));
+        bool word1 = memcmp(header + sizeof(uint32_t) * 1, server_header_data + sizeof(uint32_t) * 1, sizeof(uint32_t));
+
+        if(word0 || word1) {
           // header did not match the first connection
           CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
@@ -635,48 +751,70 @@ void MITM::readyRead() {
     }
     case STATE_SEND_SYNC:
     {
-      sync_buf_s sync;
-      size_t sync_payload_size = sizeof(sync) - 2 * sizeof(uint32_t);
+      union {
+        sync_buf_pre5_s sync_pre5;
+        sync_buf_s sync;
+      };
+      size_t sync_payload_size;
+
+      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+        sync_payload_size = sizeof(sync);
+      else
+        sync_payload_size = sizeof(sync_pre5);
+      sync_payload_size -= 2 * sizeof(uint32_t);
 
       memset(&sync, 0, sizeof(sync));
 
       sync.cmd[0] = htonl(CMD_SYNC);
-
-      // remove the length of the cmd member from the payload size
       sync.cmd[1] = htonl(sync_payload_size);
 
-      for(int i = 0; i < sockets.count(); ++i) {
+      for(int i = 0; i < sockets.count() && i < MAX_CLIENTS-1; ++i) {
         QTcpSocket *player = sockets.at(i);
 
         if(!player)
           continue;
+
+        if(player == sock) {
+          // we don't count ourselves
+          if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+            sync.client_num = htonl(i+1);
+          continue;
+        }
 
         if(!player->property("sync_sent").toBool()) {
           // don't count other players that haven't finished their handshake yet
           continue;
         }
 
-        if(player == sock) {
-          // we don't count ourselves
-          continue;
+        if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+          sync.d_c_mapping[i] = htonl(1U << (i+1));
+        } else {
+          sync_pre5.players |= 1U << i;
         }
-
-        sync.players |= 1U << i;
       }
 
       uint frameNumber = server->property("frame_count").toUInt();
 
-      sync.players = htonl(sync.players);
-      sync.frame_num = htonl(frameNumber);
-      sync.devices[0] = htonl(1);
-      sync.devices[1] = htonl(1);
-
       QByteArray nick = sock->property("nick").toByteArray();
       const char *nick_data = nick.constData();
 
-      strlcpy(sync.nick, nick_data, sizeof(sync.nick));
+      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+        sync.frame_num = htonl(frameNumber);
+        /* Device 5 is pad + analog */
+        sync.devices[0] = htonl(5);
+        sync.devices[1] = htonl(5);
 
-      sock->write((const char *)&sync, sizeof(sync));
+        strlcpy(sync.nick, nick_data, sizeof(sync_pre5.nick));
+      } else {
+        sync_pre5.players = htonl(sync_pre5.players);
+        sync_pre5.frame_num = htonl(frameNumber);
+        sync_pre5.devices[0] = htonl(5);
+        sync_pre5.devices[1] = htonl(5);
+
+        strlcpy(sync_pre5.nick, nick_data, sizeof(sync_pre5.nick));
+      }
+
+      sock->write((const char *)&sync, sync_payload_size + 2*sizeof(uint32_t));
 
       sock->setProperty("state", STATE_NONE);
       sock->setProperty("sync_sent", true);
@@ -706,6 +844,8 @@ void MITM::readyRead() {
     {
       if(cmd[1] > 0)
       {
+        if (sock->bytesAvailable() < cmd[1])
+          return;
         // not using the payload right now
         sock->read(cmd[1]);
       }
@@ -723,6 +863,8 @@ void MITM::readyRead() {
         CLIENT_LOG(sock, "received PLAY, waiting for savestate transfer to finish before sending MODE");
       }
 
+      sock->setProperty("cmd", 0);
+      sock->setProperty("cmd_size", 0);
       sock->setProperty("state", STATE_NONE);
 
       break;
@@ -888,17 +1030,17 @@ void MITM::readyRead() {
     case STATE_RECV_INPUT:
     {
       input_buf_s input;
-      size_t input_payload_size = sizeof(input) - sizeof(input.cmd);
+      size_t max_input_payload_size = sizeof(input) - sizeof(input.cmd);
+
+      uint32_t cmd_size = cmd[1];
 
       input.cmd[0] = htonl(cmd[0]);
-      input.cmd[1] = htonl(cmd[1]);
-
-      uint32_t cmd_size = sock->property("cmd_size").toUInt();
+      input.cmd[1] = htonl(cmd_size);
 
       if(cmd_size > 0) {
-        if(sock->bytesAvailable() < (qint64)input_payload_size) {
+        if(sock->bytesAvailable() < cmd_size) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), input_payload_size);
+          CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), cmd_size);
           return;
         }
 
@@ -907,16 +1049,16 @@ void MITM::readyRead() {
         sock->setProperty("cmd_size", 0);
       }
 
-      if(cmd[1] != input_payload_size) {
-        CLIENT_LOGF(sock, "input size is wrong (%08X), aborting\n", cmd[1]);
+      if (cmd_size > max_input_payload_size) {
+        CLIENT_LOGF(sock, "input size too big (%08X), aborting\n", cmd[1]);
         sock->deleteLater();
         return;
       }
 
-      qint64 readBytes = sock->read((char*)&input.frame_num, input_payload_size);
+      qint64 readBytes = sock->read((char*)&input.frame_num, cmd_size);
 
-      if(readBytes != (qint64)input_payload_size) {
-        CLIENT_LOGF(sock, "could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, input_payload_size);
+      if(readBytes != (qint64)cmd_size) {
+        CLIENT_LOGF(sock, "could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, cmd_size);
         sock->deleteLater();
         return;
       }
@@ -943,7 +1085,7 @@ void MITM::readyRead() {
         if(player->property("sync_sent").toBool()) {
           if(player != sock) {
             // send this INPUT to all other handshook players
-            player->write((const char *)&input, sizeof(input));
+            player->write((const char *)&input, cmd_size + 2*sizeof(uint32_t));
           }
 
           if(sockets.indexOf(sock) == 0) {
