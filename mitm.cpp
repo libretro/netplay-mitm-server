@@ -132,10 +132,11 @@ void MITM::sendMODE(QTcpSocket *sock) {
     mode_buf_pre5_s mode_pre5;
     mode_buf_s mode;
   };
+
   size_t mode_size;
   const Server &server_s = m_servers.at(sock->property("server").toInt());
 
-  if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+  if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
     mode_size = sizeof(mode);
   else
     mode_size = sizeof(mode_pre5);
@@ -151,10 +152,11 @@ void MITM::sendMODE(QTcpSocket *sock) {
   uint frameNumber = server->property("frame_count").toUInt();
 
   mode.frame_num = htonl(frameNumber);
-  if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-    mode.client_num = htons(sockets.indexOf(sock)+1);
-    mode.devices = htonl(1U<<sockets.indexOf(sock));
-  } else {
+
+  if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+    mode.client_num = htons(sockets.indexOf(sock) + 1);
+    mode.devices = htonl(1U << sockets.indexOf(sock));
+  }else{
     mode_pre5.player_num = htons(sockets.indexOf(sock));
   }
 
@@ -164,13 +166,13 @@ void MITM::sendMODE(QTcpSocket *sock) {
       continue;
     }
 
-    if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-      if (player == sock) {
-        mode.target = htons(1U<<15|1U<<14);
-      } else {
-        mode.target = htons(1U<<14);
+    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+      if(player == sock) {
+        mode.target = htons(1U << 15 | 1U << 14);
+      }else{
+        mode.target = htons(1U << 14);
       }
-    } else {
+    }else{
       if(player == sock) {
         mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
       }else{
@@ -251,7 +253,7 @@ void MITM::acceptError(QAbstractSocket::SocketError socketError) {
 void MITM::newConnection() {
   QTcpServer *server = static_cast<QTcpServer*>(sender());
 
-  if (!server) {
+  if(!server) {
     printf("could not find server for new connection\n");
     QCoreApplication::quit();
     return;
@@ -429,9 +431,9 @@ void MITM::readyRead() {
           CLIENT_LOGF(sock, "header: got %lli bytes\n", readBytes);
 
           // check if it's a header for version >= 5
-          if (ntohl(headerMagic) == NETPLAY_MAGIC) {
+          if(ntohl(headerMagic) == NETPLAY_MAGIC) {
             server_s.version = NETPLAY_VERSION_INPUT_UPGRADE;
-          } else {
+          }else{
             // We don't know the exact version, but all earlier versions are the same to us
             server_s.version = NETPLAY_VERSION_FIRST;
           }
@@ -487,7 +489,7 @@ void MITM::readyRead() {
         }
       }
 
-      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+      if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
         sock->setProperty("state", STATE_POST_HEADER); // We still have more header
       else
         sock->setProperty("state", STATE_SEND_NICKNAME);
@@ -508,6 +510,7 @@ void MITM::readyRead() {
             char header[POST_HEADER_LEN];
             uint32_t rawProtocolVersion;
           };
+
           uint32_t protocolVersion;
 
           qint64 readBytes = sock->read(header, POST_HEADER_LEN);
@@ -522,7 +525,8 @@ void MITM::readyRead() {
 
           // check if it's a header for version >= 5
           protocolVersion = ntohl(rawProtocolVersion);
-          if (protocolVersion >= NETPLAY_VERSION_INPUT_UPGRADE && protocolVersion <= NETPLAY_VERSION_LAST)
+
+          if(protocolVersion >= NETPLAY_VERSION_INPUT_UPGRADE && protocolVersion <= NETPLAY_VERSION_LAST)
             server_s.version = protocolVersion;
 
           // store the first client's header to use for all others
@@ -755,12 +759,14 @@ void MITM::readyRead() {
         sync_buf_pre5_s sync_pre5;
         sync_buf_s sync;
       };
+
       size_t sync_payload_size;
 
-      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+      if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
         sync_payload_size = sizeof(sync);
       else
         sync_payload_size = sizeof(sync_pre5);
+
       sync_payload_size -= 2 * sizeof(uint32_t);
 
       memset(&sync, 0, sizeof(sync));
@@ -768,7 +774,7 @@ void MITM::readyRead() {
       sync.cmd[0] = htonl(CMD_SYNC);
       sync.cmd[1] = htonl(sync_payload_size);
 
-      for(int i = 0; i < sockets.count() && i < MAX_CLIENTS-1; ++i) {
+      for(int i = 0; i < sockets.count() && i < MAX_CLIENTS - 1; ++i) {
         QTcpSocket *player = sockets.at(i);
 
         if(!player)
@@ -776,7 +782,7 @@ void MITM::readyRead() {
 
         if(player == sock) {
           // we don't count ourselves
-          if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+          if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
             sync.client_num = htonl(i+1);
           continue;
         }
@@ -786,9 +792,9 @@ void MITM::readyRead() {
           continue;
         }
 
-        if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-          sync.d_c_mapping[i] = htonl(1U << (i+1));
-        } else {
+        if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+          sync.d_c_mapping[i] = htonl(1U << (i + 1));
+        }else{
           sync_pre5.players |= 1U << i;
         }
       }
@@ -798,14 +804,14 @@ void MITM::readyRead() {
       QByteArray nick = sock->property("nick").toByteArray();
       const char *nick_data = nick.constData();
 
-      if (server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+      if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
         sync.frame_num = htonl(frameNumber);
         /* Device 5 is pad + analog */
         sync.devices[0] = htonl(5);
         sync.devices[1] = htonl(5);
 
         strlcpy(sync.nick, nick_data, sizeof(sync_pre5.nick));
-      } else {
+      }else{
         sync_pre5.players = htonl(sync_pre5.players);
         sync_pre5.frame_num = htonl(frameNumber);
         sync_pre5.devices[0] = htonl(5);
@@ -821,8 +827,7 @@ void MITM::readyRead() {
 
       CLIENT_LOG(sock, "sent sync to host");
 
-      if(sockets.indexOf(sock) == 0)
-      {
+      if(sockets.indexOf(sock) == 0) {
         server->setProperty("first_sync_sent", true);
       }else{
         // after any non-master connection is up, request a savestate from the master
@@ -842,9 +847,8 @@ void MITM::readyRead() {
     }
     case STATE_RECV_PLAY:
     {
-      if(cmd[1] > 0)
-      {
-        if (sock->bytesAvailable() < cmd[1])
+      if(cmd[1] > 0) {
+        if(sock->bytesAvailable() < cmd[1])
           return;
         // not using the payload right now
         sock->read(cmd[1]);
@@ -1031,7 +1035,6 @@ void MITM::readyRead() {
     {
       input_buf_s input;
       size_t max_input_payload_size = sizeof(input) - sizeof(input.cmd);
-
       uint32_t cmd_size = cmd[1];
 
       input.cmd[0] = htonl(cmd[0]);
@@ -1049,7 +1052,7 @@ void MITM::readyRead() {
         sock->setProperty("cmd_size", 0);
       }
 
-      if (cmd_size > max_input_payload_size) {
+      if(cmd_size > max_input_payload_size) {
         CLIENT_LOGF(sock, "input size too big (%08X), aborting\n", cmd[1]);
         sock->deleteLater();
         return;
