@@ -251,7 +251,7 @@ void MITM::acceptError(QAbstractSocket::SocketError socketError) {
 }
 
 void MITM::newConnection() {
-  QTcpServer *server = static_cast<QTcpServer*>(sender());
+  QTcpServer *server = qobject_cast<QTcpServer*>(sender());
 
   if(!server) {
     printf("could not find server for new connection\n");
@@ -307,7 +307,7 @@ void MITM::newConnection() {
 }
 
 void MITM::readyRead() {
-  QTcpSocket *sock = static_cast<QTcpSocket*>(sender());
+  QTcpSocket *sock = qobject_cast<QTcpSocket*>(sender());
 
   if(!sock) {
     printf("ERROR: no socket in readyRead\n");
@@ -1136,7 +1136,7 @@ void MITM::readyRead() {
 }
 
 void MITM::disconnected() {
-  QTcpSocket *sock = static_cast<QTcpSocket*>(sender());
+  QTcpSocket *sock = qobject_cast<QTcpSocket*>(sender());
 
   if(!sock)
     return;
@@ -1165,7 +1165,7 @@ void MITM::error(QAbstractSocket::SocketError socketError) {
   // NOTE: only attempt a reconnect here if using a 0-timer
   Q_UNUSED(socketError)
 
-  QTcpSocket *sock = static_cast<QTcpSocket*>(sender());
+  QTcpSocket *sock = qobject_cast<QTcpSocket*>(sender());
 
   if(!sock)
     return;
