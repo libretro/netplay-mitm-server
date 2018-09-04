@@ -129,8 +129,8 @@ struct Server {
   }
 
   uint32_t version;
-  QTcpServer *server;
-  QList<QTcpSocket*> sockets;
+  QPointer<QTcpServer> server;
+  QList<QPointer<QTcpSocket> > sockets;
 };
 
 enum ClientState {
@@ -171,7 +171,7 @@ private slots:
 private:
   void sendMODE(QTcpSocket *sock);
 
-  QTcpServer *m_server;
+  QPointer<QTcpServer> m_server;
   QList<Server> m_servers;
   QCommandLineParser m_getopt;
   QTimer m_timer;

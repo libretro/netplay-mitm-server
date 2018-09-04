@@ -115,8 +115,8 @@ MITM::MITM(QObject *parent) :
   m_getopt.addOption(QCommandLineOption(QStringList() << "m" << "multi", "Multi-server mode. The main port becomes a command interface used to request new ports to be added. Send CMD_REQ_PORT to add a new server."));
   m_getopt.process(*qApp);
 
-  connect(m_server, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
-  connect(m_server, SIGNAL(newConnection()), this, SLOT(newConnection()));
+  connect(m_server.data(), SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
+  connect(m_server.data(), SIGNAL(newConnection()), this, SLOT(newConnection()));
   connect(&m_timer, SIGNAL(timeout()), this, SLOT(timeout()));
 
   m_server->setProperty("master", true);
@@ -146,8 +146,11 @@ void MITM::sendMODE(QTcpSocket *sock) {
   mode.cmd[0] = htonl(CMD_MODE);
   mode.cmd[1] = htonl(mode_size - sizeof(mode_pre5.cmd));
 
-  const QTcpServer *server = server_s.server;
-  const QList<QTcpSocket*> &sockets = server_s.sockets;
+  const QPointer<QTcpServer> &server = server_s.server;
+  const QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
+
+  if(sockets.count() == 0 || !server)
+    return;
 
   uint frameNumber = server->property("frame_count").toUInt();
 
@@ -160,7 +163,12 @@ void MITM::sendMODE(QTcpSocket *sock) {
     mode_pre5.player_num = htons(sockets.indexOf(sock));
   }
 
-  foreach(QTcpSocket *player, sockets) {
+  for(int i = 0; i < sockets.count(); ++i) {
+    const QPointer<QTcpSocket> &player = sockets.at(i);
+
+    if(!player)
+      continue;
+
     if(!player->property("sync_sent").toBool()) {
       // don't send MODE to other players that haven't finished their handshake yet
       continue;
@@ -200,6 +208,9 @@ void MITM::start() {
   if(m_getopt.isSet("port")) {
     port = m_getopt.value("port").toInt();
   }
+
+  if(!m_server)
+    return;
 
   if(!m_server->listen(QHostAddress::Any, port)) {
     printf("could not bind to port %d\n", port);
@@ -281,7 +292,7 @@ void MITM::newConnection() {
 
   Server &server_s = *server_ptr;
   QTcpSocket *sock = server->nextPendingConnection();
-  QList<QTcpSocket*> &sockets = server_s.sockets;
+  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
 
   if(!sock) {
     printf("could not find socket for new connection\n");
@@ -314,9 +325,28 @@ void MITM::readyRead() {
     return;
   }
 
-  Server &server_s = m_servers[sock->property("server").toInt()];
-  QTcpServer *server = server_s.server;
-  QList<QTcpSocket*> &sockets = server_s.sockets;
+  if(m_servers.count() == 0) {
+    printf("ERROR: no servers\n");
+    return;
+  }
+
+  int serverIndex = sock->property("server").toInt();
+
+  if(serverIndex > m_servers.count() - 1) {
+    printf("ERROR: server not found\n");
+    return;
+  }
+
+  Server &server_s = m_servers[serverIndex];
+
+  const QPointer<QTcpServer> &server = server_s.server;
+
+  if(!server) {
+    printf("ERROR: no server\n");
+    return;
+  }
+
+  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
   ClientState state = static_cast<ClientState>(sock->property("state").toUInt());
   uint32_t cmd[2] = {0};
 
@@ -775,7 +805,7 @@ void MITM::readyRead() {
       sync.cmd[1] = htonl(sync_payload_size);
 
       for(int i = 0; i < sockets.count() && i < MAX_CLIENTS - 1; ++i) {
-        QTcpSocket *player = sockets.at(i);
+        const QPointer<QTcpSocket> &player = sockets.at(i);
 
         if(!player)
           continue;
@@ -835,12 +865,14 @@ void MITM::readyRead() {
         req.cmd[0] = htonl(CMD_REQ_SAVE);
         req.cmd[1] = htonl(0);
 
-        QTcpSocket *master = sockets.at(0);
+        const QPointer<QTcpSocket> &master = sockets.at(0);
 
-        master->setProperty("savestate_pending", true);
-        master->write((const char *)&req, sizeof(req));
+        if(master) {
+          master->setProperty("savestate_pending", true);
+          master->write((const char *)&req, sizeof(req));
 
-        CLIENT_LOG(sock, "requested savestate from the master");
+          CLIENT_LOG(sock, "requested savestate from the master");
+        }
       }
 
       break;
@@ -854,22 +886,24 @@ void MITM::readyRead() {
         sock->read(cmd[1]);
       }
 
-      QTcpSocket *master = sockets.at(0);
+      const QPointer<QTcpSocket> &master = sockets.at(0);
 
-      bool savestate_pending = master->property("savestate_pending").toBool();
+      if(master) {
+        bool savestate_pending = master->property("savestate_pending").toBool();
 
-      if(!savestate_pending) {
-        sendMODE(sock);
-        CLIENT_LOG(sock, "received PLAY");
-      }else{
-        // track which player sent the original PLAY command so the 'you' bit in MODE can be set accordingly
-        sock->setProperty("sent_play", true);
-        CLIENT_LOG(sock, "received PLAY, waiting for savestate transfer to finish before sending MODE");
+        if(!savestate_pending) {
+          sendMODE(sock);
+          CLIENT_LOG(sock, "received PLAY");
+        }else{
+          // track which player sent the original PLAY command so the 'you' bit in MODE can be set accordingly
+          sock->setProperty("sent_play", true);
+          CLIENT_LOG(sock, "received PLAY, waiting for savestate transfer to finish before sending MODE");
+        }
+
+        sock->setProperty("cmd", 0);
+        sock->setProperty("cmd_size", 0);
+        sock->setProperty("state", STATE_NONE);
       }
-
-      sock->setProperty("cmd", 0);
-      sock->setProperty("cmd_size", 0);
-      sock->setProperty("state", STATE_NONE);
 
       break;
     }
@@ -934,38 +968,51 @@ void MITM::readyRead() {
 
       CLIENT_LOGF(sock, "successfully received savestate of %lu bytes with original size %u\n", state_serial_size, ntohl(loadsave.orig_size));
 
-      QTcpSocket *master = sockets[0];
-      master->setProperty("savestate_pending", false);
+      const QPointer<QTcpSocket> &master = sockets.at(0);
 
-      uint frameNumber = ntohl(loadsave.frame_num);
+      if(master) {
+        master->setProperty("savestate_pending", false);
 
-      CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", frameNumber);
+        uint frameNumber = ntohl(loadsave.frame_num);
 
-      foreach(QTcpSocket *player, sockets) {
-        if(player != sock) {
-          // forward the savestate to everyone else
-          player->write((const char *)&loadsave, sizeof(loadsave));
-          player->write((const char *)state, state_serial_size);
-          CLIENT_LOGF(sock, "sent savestate to player %d\n", sockets.indexOf(player));
+        CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", frameNumber);
+
+        for(int i = 0; i < sockets.count(); ++i) {
+          const QPointer<QTcpSocket> &player = sockets.at(i);
+
+          if(!player)
+            continue;
+
+          if(player != sock) {
+            // forward the savestate to everyone else
+            player->write((const char *)&loadsave, sizeof(loadsave));
+            player->write((const char *)state, state_serial_size);
+            CLIENT_LOGF(sock, "sent savestate to player %d\n", sockets.indexOf(player));
+          }
         }
-      }
 
-      foreach(QTcpSocket *player, sockets) {
-        bool sent_play = player->property("sent_play").toBool();
+        for(int i = 0; i < sockets.count(); ++i) {
+          const QPointer<QTcpSocket> &player = sockets.at(i);
 
-        // find which player sent the original PLAY, so we know who to set the 'you' bit for in the MODE command
-        if(sent_play) {
-          sendMODE(player);
-          player->setProperty("sent_play", false);
+          if(!player)
+            continue;
+
+          bool sent_play = player->property("sent_play").toBool();
+
+          // find which player sent the original PLAY, so we know who to set the 'you' bit for in the MODE command
+          if(sent_play) {
+            sendMODE(player);
+            player->setProperty("sent_play", false);
+          }
         }
+
+        CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
+
+        ++frameNumber;
+
+        server->setProperty("frame_count", frameNumber);
+        sock->setProperty("state", STATE_NONE);
       }
-
-      CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
-
-      ++frameNumber;
-
-      server->setProperty("frame_count", frameNumber);
-      sock->setProperty("state", STATE_NONE);
 
       break;
     }
@@ -984,9 +1031,9 @@ void MITM::readyRead() {
       if(!m_getopt.isSet("multi"))
         break;
 
-      QTcpServer *server = new QTcpServer(this);
-      connect(server, SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
-      connect(server, SIGNAL(newConnection()), this, SLOT(newConnection()));
+      QPointer<QTcpServer> server = new QTcpServer(this);
+      connect(server.data(), SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
+      connect(server.data(), SIGNAL(newConnection()), this, SLOT(newConnection()));
 
       char header[HEADER_LEN] = {0};
       info_buf_s info;
@@ -1084,7 +1131,12 @@ void MITM::readyRead() {
       noinput.frame_num = htonl(frameNumber);
 
       // forward this INPUT to everyone else, and send NOINPUT to everyone
-      foreach(QTcpSocket *player, sockets) {
+      for(int i = 0; i < sockets.count(); ++i) {
+        const QPointer<QTcpSocket> &player = sockets.at(i);
+
+        if(!player)
+          continue;
+
         if(player->property("sync_sent").toBool()) {
           if(player != sock) {
             // send this INPUT to all other handshook players
@@ -1142,8 +1194,8 @@ void MITM::disconnected() {
     return;
 
   Server &server_s = m_servers[sock->property("server").toInt()];
-  QTcpServer *server = server_s.server;
-  QList<QTcpSocket*> &sockets = server_s.sockets;
+  QPointer<QTcpServer> &server = server_s.server;
+  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
 
   if(!server) {
     printf("could not find server for previous connection\n");
