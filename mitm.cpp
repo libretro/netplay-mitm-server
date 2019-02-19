@@ -171,10 +171,10 @@ void MITM::sendMODE(QTcpSocket *sock) {
   mode.frame_num = qToBigEndian(frameNumber);
 
   if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-    mode.client_num = qToBigEndian(sockets.indexOf(sock) + 1);
+    mode.client_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock) + 1));
     mode.devices = qToBigEndian(1U << sockets.indexOf(sock));
   }else{
-    mode_pre5.player_num = qToBigEndian(sockets.indexOf(sock));
+    mode_pre5.player_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock)));
   }
 
   for(int i = 0; i < sockets.count(); ++i) {
@@ -1137,7 +1137,7 @@ void MITM::readyRead() {
 
       printf("added port %d\n", server->serverPort());
 
-      buf.port = qToBigEndian(server->serverPort());
+      buf.port = qToBigEndian(static_cast<quint32>(server->serverPort()));
 
       sock->write((const char *)&buf, sizeof(buf));
 
