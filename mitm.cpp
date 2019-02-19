@@ -13,14 +13,26 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// Why is this define needed on Windows? Without it we get "error: expected ')' before 'PRIi64'"
+#define __STDC_FORMAT_MACROS
+#include <cinttypes>
+
 #include "mitm.h"
 #include <stdio.h>
+#include <QtEndian>
 
 #ifdef Q_OS_UNIX
 #include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #endif
 
-#include <arpa/inet.h>
+#ifdef Q_OS_WIN
+#include <winsock2.h>
+#include <winsock.h>
+#include <wsipv6ok.h>
+#endif
 
 #ifdef DEBUG
 static QString getPeerIPv4(QHostAddress addr) {
@@ -73,7 +85,7 @@ size_t strlcpy(char *dest, const char *source, size_t size)
 static void dump_uints(const char *data, int bytes) {
 #if DEBUG == 2
   for(uint i = 0; i < bytes / sizeof(uint32_t); i++) {
-    printf(" %08X", ntohl(((uint32_t*)data)[i]));
+    printf(" %08X", qFromBigEndian(((uint32_t*)data)[i]));
   }
 
   printf("\n");
@@ -143,8 +155,8 @@ void MITM::sendMODE(QTcpSocket *sock) {
 
   memset(&mode_pre5, 0, mode_size);
 
-  mode.cmd[0] = htonl(CMD_MODE);
-  mode.cmd[1] = htonl(mode_size - sizeof(mode_pre5.cmd));
+  mode.cmd[0] = qToBigEndian(CMD_MODE);
+  mode.cmd[1] = qToBigEndian(static_cast<quint32>(mode_size - sizeof(mode_pre5.cmd)));
 
   const QPointer<QTcpServer> &server = server_s.server;
   const QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
@@ -154,13 +166,13 @@ void MITM::sendMODE(QTcpSocket *sock) {
 
   uint frameNumber = server->property("frame_count").toUInt();
 
-  mode.frame_num = htonl(frameNumber);
+  mode.frame_num = qToBigEndian(frameNumber);
 
   if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-    mode.client_num = htons(sockets.indexOf(sock) + 1);
-    mode.devices = htonl(1U << sockets.indexOf(sock));
+    mode.client_num = qToBigEndian(sockets.indexOf(sock) + 1);
+    mode.devices = qToBigEndian(1U << sockets.indexOf(sock));
   }else{
-    mode_pre5.player_num = htons(sockets.indexOf(sock));
+    mode_pre5.player_num = qToBigEndian(sockets.indexOf(sock));
   }
 
   for(int i = 0; i < sockets.count(); ++i) {
@@ -176,22 +188,22 @@ void MITM::sendMODE(QTcpSocket *sock) {
 
     if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
       if(player == sock) {
-        mode.target = htons(1U << 15 | 1U << 14);
+        mode.target = qToBigEndian(static_cast<quint16>(1U << 15 | 1U << 14));
       }else{
-        mode.target = htons(1U << 14);
+        mode.target = qToBigEndian(static_cast<quint16>(1U << 14));
       }
     }else{
       if(player == sock) {
-        mode.target = htons(3); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+        mode.target = qToBigEndian(static_cast<quint16>(3)); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
       }else{
-        mode.target = htons(2);
+        mode.target = qToBigEndian(static_cast<quint16>(2));
       }
     }
 
     CLIENT_LOGF(sock, "MODE for player %d:", sockets.indexOf(player));
 #ifdef DEBUG
     for(uint i = 0; i < sizeof(mode_pre5) / sizeof(uint32_t); ++i) {
-      printf(" %08X", ntohl(((uint32_t*)&mode_pre5)[i]));
+      printf(" %08X", qFromBigEndian(((uint32_t*)&mode_pre5)[i]));
     }
 
     printf("\n");
@@ -355,7 +367,7 @@ void MITM::readyRead() {
     return;
   }
 
-  //printf("readyRead: %lli bytes available, state is %d for host %s\n", sock->bytesAvailable(), state, QC_STR(sock->peerAddress().toString()));
+  //printf("readyRead: %" PRIi64 " bytes available, state is %d for host %s\n", static_cast<int64_t>(sock->bytesAvailable()), state, QC_STR(sock->peerAddress().toString()));
 
   // check for end of mandatory state handling before accepting any new commands
   if(state >= STATE_NONE) {
@@ -385,12 +397,12 @@ void MITM::readyRead() {
       cmd[0] = current_cmd;
       cmd[1] = cmd_size;
     }else{
-      cmd[0] = ntohl(newcmd[0]);
-      cmd[1] = ntohl(newcmd[1]);
+      cmd[0] = qFromBigEndian(newcmd[0]);
+      cmd[1] = qFromBigEndian(newcmd[1]);
     }
 
     if(sock->bytesAvailable() < (qint64)cmd[1]) {
-      //CLIENT_LOGF(sock, "WARNING: not enough data, we have %lli bytes available but the command payload size is %u\n", sock->bytesAvailable(), cmd[1]);
+      //CLIENT_LOGF(sock, "WARNING: not enough data, we have %" PRIi64 " bytes available but the command payload size is %u\n", static_cast<int64_t>(sock->bytesAvailable()), cmd[1]);
       sock->setProperty("cmd", cmd[0]);
       sock->setProperty("cmd_size", cmd[1]);
     }
@@ -442,7 +454,7 @@ void MITM::readyRead() {
       if(sockets.indexOf(sock) == 0) {
         if(sock->bytesAvailable() < HEADER_LEN) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "header: not enough data available, only %lli bytes out of %d\n", sock->bytesAvailable(), HEADER_LEN);
+          CLIENT_LOGF(sock, "header: not enough data available, only %" PRIi64 " bytes out of %" PRIi32 "\n", static_cast<int64_t>(sock->bytesAvailable()), HEADER_LEN);
           return;
         }else{
           union {
@@ -458,10 +470,10 @@ void MITM::readyRead() {
             return;
           }
 
-          CLIENT_LOGF(sock, "header: got %lli bytes\n", readBytes);
+          CLIENT_LOGF(sock, "header: got %" PRIi64 " bytes\n", static_cast<int64_t>(readBytes));
 
           // check if it's a header for version >= 5
-          if(ntohl(headerMagic) == NETPLAY_MAGIC) {
+          if(qFromBigEndian(headerMagic) == NETPLAY_MAGIC) {
             server_s.version = NETPLAY_VERSION_INPUT_UPGRADE;
           }else{
             // We don't know the exact version, but all earlier versions are the same to us
@@ -533,7 +545,7 @@ void MITM::readyRead() {
       if(sockets.indexOf(sock) == 0) {
         if(sock->bytesAvailable() < POST_HEADER_LEN) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "post header: not enough data available, only %lli bytes out of %d\n", sock->bytesAvailable(), POST_HEADER_LEN);
+          CLIENT_LOGF(sock, "post header: not enough data available, only %" PRIi64 " bytes out of %d\n", static_cast<int64_t>(sock->bytesAvailable()), POST_HEADER_LEN);
           return;
         }else{
           union {
@@ -551,10 +563,10 @@ void MITM::readyRead() {
             return;
           }
 
-          CLIENT_LOGF(sock, "post header: got %lli bytes\n", readBytes);
+          CLIENT_LOGF(sock, "post header: got %" PRIi64 " bytes\n", static_cast<int64_t>(readBytes));
 
           // check if it's a header for version >= 5
-          protocolVersion = ntohl(rawProtocolVersion);
+          protocolVersion = qFromBigEndian(rawProtocolVersion);
 
           if(protocolVersion >= NETPLAY_VERSION_INPUT_UPGRADE && protocolVersion <= NETPLAY_VERSION_LAST)
             server_s.version = protocolVersion;
@@ -614,8 +626,8 @@ void MITM::readyRead() {
 
       memset(&nick, 0, sizeof(nick));
 
-      nick.cmd[0] = htonl(CMD_NICK);
-      nick.cmd[1] = htonl(sizeof(nick.nick));
+      nick.cmd[0] = qToBigEndian(CMD_NICK);
+      nick.cmd[1] = qToBigEndian(static_cast<quint32>(sizeof(nick.nick)));
 
       strlcpy(nick.nick, "NICK", 5);
 
@@ -636,7 +648,7 @@ void MITM::readyRead() {
       if(cmd_size > 0) {
         if(sock->bytesAvailable() < (qint64)sizeof(nick.nick)) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "recv nick: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), sizeof(nick));
+          CLIENT_LOGF(sock, "recv nick: not enough data available, only %" PRIi64 " bytes out of %" PRIu64 "\n", static_cast<int64_t>(sock->bytesAvailable()), sizeof(nick));
           return;
         }
 
@@ -654,12 +666,12 @@ void MITM::readyRead() {
       qint64 readBytes = sock->read(nick.nick, sizeof(nick.nick));
 
       if(readBytes != sizeof(nick.nick)) {
-        CLIENT_LOGF(sock, "could not read nickname from client. got %lli bytes when expecting %li, aborting\n", readBytes, sizeof(nick.nick));
+        CLIENT_LOGF(sock, "could not read nickname from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), sizeof(nick.nick));
         sock->deleteLater();
         return;
       }
 
-      CLIENT_LOGF(sock, "nick: got %lli bytes\n", readBytes);
+      CLIENT_LOGF(sock, "nick: got %" PRIi64 " bytes\n", static_cast<int64_t>(readBytes));
 
       CLIENT_LOGF(sock, "nick is %s\n", nick.nick);
 
@@ -679,10 +691,10 @@ void MITM::readyRead() {
 
       size_t info_payload_size = info_set ? (sizeof(server_info) - sizeof(server_info.cmd)) : 0;
 
-      server_info.cmd[0] = htonl(CMD_INFO);
+      server_info.cmd[0] = qToBigEndian(CMD_INFO);
 
       // remove the length of the cmd member from the payload size
-      server_info.cmd[1] = htonl(info_payload_size);
+      server_info.cmd[1] = qToBigEndian(static_cast<quint32>(info_payload_size));
 
       server->setProperty("info", QVariant::fromValue(server_info));
 
@@ -707,15 +719,15 @@ void MITM::readyRead() {
       size_t info_payload_size = sizeof(info) - sizeof(info.cmd);
       info_buf_s server_info = server->property("info").value<info_buf_s>();
 
-      info.cmd[0] = htonl(cmd[0]);
-      info.cmd[1] = htonl(cmd[1]);
+      info.cmd[0] = qToBigEndian(cmd[0]);
+      info.cmd[1] = qToBigEndian(cmd[1]);
 
       uint32_t cmd_size = sock->property("cmd_size").toUInt();
 
       if(cmd_size > 0) {
         if(sock->bytesAvailable() < (qint64)info_payload_size) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "recv info: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), info_payload_size);
+          CLIENT_LOGF(sock, "recv info: not enough data available, only %" PRIi64 " bytes out of %" PRIu64 "\n", static_cast<int64_t>(sock->bytesAvailable()), info_payload_size);
           return;
         }
 
@@ -733,15 +745,15 @@ void MITM::readyRead() {
       qint64 readBytes = sock->read(info.core_name, info_payload_size);
 
       if(readBytes != (qint64)info_payload_size) {
-        CLIENT_LOGF(sock, "could not read info from client. got %lli bytes when expecting %li, aborting\n", readBytes, info_payload_size);
+        CLIENT_LOGF(sock, "could not read info from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), info_payload_size);
         sock->deleteLater();
         return;
       }
 
-      CLIENT_LOGF(sock, "info: got %lli bytes\n", readBytes);
+      CLIENT_LOGF(sock, "info: got %" PRIi64 " bytes\n", static_cast<int64_t>(readBytes));
       CLIENT_LOGF(sock, "info: core name is %s\n", info.core_name);
       CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
-      CLIENT_LOGF(sock, "info: content crc is %08X\n", ntohl(info.content_crc));
+      CLIENT_LOGF(sock, "info: content crc is %08X\n", qFromBigEndian(info.content_crc));
 
       if(sockets.indexOf(sock) == 0) {
         if(server->property("first_sync_sent").toBool()) {
@@ -801,8 +813,8 @@ void MITM::readyRead() {
 
       memset(&sync, 0, sizeof(sync));
 
-      sync.cmd[0] = htonl(CMD_SYNC);
-      sync.cmd[1] = htonl(sync_payload_size);
+      sync.cmd[0] = qToBigEndian(CMD_SYNC);
+      sync.cmd[1] = qToBigEndian(static_cast<quint32>(sync_payload_size));
 
       for(int i = 0; i < sockets.count() && i < MAX_CLIENTS - 1; ++i) {
         const QPointer<QTcpSocket> &player = sockets.at(i);
@@ -813,7 +825,7 @@ void MITM::readyRead() {
         if(player == sock) {
           // we don't count ourselves
           if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
-            sync.client_num = htonl(i+1);
+            sync.client_num = qToBigEndian(i + 1);
           continue;
         }
 
@@ -823,7 +835,7 @@ void MITM::readyRead() {
         }
 
         if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-          sync.d_c_mapping[i] = htonl(1U << (i + 1));
+          sync.d_c_mapping[i] = qToBigEndian(1U << (i + 1));
         }else{
           sync_pre5.players |= 1U << i;
         }
@@ -835,17 +847,17 @@ void MITM::readyRead() {
       const char *nick_data = nick.constData();
 
       if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-        sync.frame_num = htonl(frameNumber);
+        sync.frame_num = qToBigEndian(frameNumber);
         /* Device 5 is pad + analog */
-        sync.devices[0] = htonl(5);
-        sync.devices[1] = htonl(5);
+        sync.devices[0] = qToBigEndian(5);
+        sync.devices[1] = qToBigEndian(5);
 
         strlcpy(sync.nick, nick_data, sizeof(sync_pre5.nick));
       }else{
-        sync_pre5.players = htonl(sync_pre5.players);
-        sync_pre5.frame_num = htonl(frameNumber);
-        sync_pre5.devices[0] = htonl(5);
-        sync_pre5.devices[1] = htonl(5);
+        sync_pre5.players = qToBigEndian(sync_pre5.players);
+        sync_pre5.frame_num = qToBigEndian(frameNumber);
+        sync_pre5.devices[0] = qToBigEndian(5);
+        sync_pre5.devices[1] = qToBigEndian(5);
 
         strlcpy(sync_pre5.nick, nick_data, sizeof(sync_pre5.nick));
       }
@@ -862,8 +874,8 @@ void MITM::readyRead() {
       }else{
         // after any non-master connection is up, request a savestate from the master
         reqsave_buf_s req;
-        req.cmd[0] = htonl(CMD_REQ_SAVE);
-        req.cmd[1] = htonl(0);
+        req.cmd[0] = qToBigEndian(CMD_REQ_SAVE);
+        req.cmd[1] = qToBigEndian(0);
 
         const QPointer<QTcpSocket> &master = sockets.at(0);
 
@@ -913,8 +925,8 @@ void MITM::readyRead() {
       size_t loadsave_payload_size = sizeof(loadsave) - sizeof(loadsave.cmd);
       size_t state_serial_size = cmd[1] - loadsave_payload_size;
 
-      loadsave.cmd[0] = htonl(cmd[0]);
-      loadsave.cmd[1] = htonl(cmd[1]);
+      loadsave.cmd[0] = qToBigEndian(cmd[0]);
+      loadsave.cmd[1] = qToBigEndian(cmd[1]);
 
       CLIENT_LOGF(sock, "receiving savestate data, total size is %u\n", cmd[1]);
 
@@ -923,7 +935,7 @@ void MITM::readyRead() {
       if(cmd_size > 0) {
         if(sock->bytesAvailable() < (qint64)cmd_size) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "recv loadsave: not enough data available, only %lli bytes out of %u\n", sock->bytesAvailable(), cmd_size);
+          CLIENT_LOGF(sock, "recv loadsave: not enough data available, only %" PRIi64 " bytes out of %u\n", static_cast<int64_t>(sock->bytesAvailable()), cmd_size);
           return;
         }
 
@@ -935,7 +947,7 @@ void MITM::readyRead() {
           // Not enough data available yet, but we can't keep waiting.
           // If we could, the cmd_size property would be set accordingly.
           // Hopefully this is never reached
-          CLIENT_LOGF(sock, "SHOULD_NOT_SEE_ME recv loadsave: not enough data available, only %lli bytes out of %u, aborting connection\n", sock->bytesAvailable(), cmd[1]);
+          CLIENT_LOGF(sock, "SHOULD_NOT_SEE_ME recv loadsave: not enough data available, only %" PRIi64 " bytes out of %u, aborting connection\n", static_cast<int64_t>(sock->bytesAvailable()), cmd[1]);
           sock->deleteLater();
           return;
         }
@@ -944,7 +956,7 @@ void MITM::readyRead() {
       qint64 readBytes = sock->read((char*)&loadsave.frame_num, loadsave_payload_size);
 
       if(readBytes != (qint64)loadsave_payload_size) {
-        CLIENT_LOGF(sock, "could not read loadsave from client. got %lli bytes when expecting %li, aborting\n", readBytes, loadsave_payload_size);
+        CLIENT_LOGF(sock, "could not read loadsave from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), loadsave_payload_size);
         sock->deleteLater();
         return;
       }
@@ -955,7 +967,7 @@ void MITM::readyRead() {
       readBytes = sock->read((char*)state, state_serial_size);
 
       if(readBytes != (qint64)state_serial_size) {
-        CLIENT_LOGF(sock, "could not read save state serialization from client. got %lli bytes when expecting %li, aborting\n", readBytes, state_serial_size);
+        CLIENT_LOGF(sock, "could not read save state serialization from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), state_serial_size);
         sock->deleteLater();
         return;
       }
@@ -966,14 +978,14 @@ void MITM::readyRead() {
         break;
       }
 
-      CLIENT_LOGF(sock, "successfully received savestate of %lu bytes with original size %u\n", state_serial_size, ntohl(loadsave.orig_size));
+      CLIENT_LOGF(sock, "successfully received savestate of %" PRIu64 " bytes with original size %u\n", state_serial_size, qFromBigEndian(loadsave.orig_size));
 
       const QPointer<QTcpSocket> &master = sockets.at(0);
 
       if(master) {
         master->setProperty("savestate_pending", false);
 
-        uint frameNumber = ntohl(loadsave.frame_num);
+        uint frameNumber = qFromBigEndian(loadsave.frame_num);
 
         CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", frameNumber);
 
@@ -1057,13 +1069,13 @@ void MITM::readyRead() {
       m_servers.append(server_s);
 
       struct newport_buf_s buf;
-      buf.cmd[0] = htonl(CMD_NEW_PORT);
-      buf.cmd[1] = htonl(sizeof(uint32_t));
+      buf.cmd[0] = qToBigEndian(CMD_NEW_PORT);
+      buf.cmd[1] = qToBigEndian(static_cast<quint32>(sizeof(uint32_t)));
 
       if(!server->listen(QHostAddress::Any, 0)) {
         printf("could not bind to a random port\n");
 
-        buf.port = htonl(0);
+        buf.port = qToBigEndian(0);
 
         sock->write((const char *)&buf, sizeof(buf));
 
@@ -1072,7 +1084,7 @@ void MITM::readyRead() {
 
       printf("added port %d\n", server->serverPort());
 
-      buf.port = htonl(server->serverPort());
+      buf.port = qToBigEndian(server->serverPort());
 
       sock->write((const char *)&buf, sizeof(buf));
 
@@ -1084,13 +1096,13 @@ void MITM::readyRead() {
       size_t max_input_payload_size = sizeof(input) - sizeof(input.cmd);
       uint32_t cmd_size = cmd[1];
 
-      input.cmd[0] = htonl(cmd[0]);
-      input.cmd[1] = htonl(cmd_size);
+      input.cmd[0] = qToBigEndian(cmd[0]);
+      input.cmd[1] = qToBigEndian(cmd_size);
 
       if(cmd_size > 0) {
         if(sock->bytesAvailable() < cmd_size) {
           // not enough data available yet, keep waiting
-          CLIENT_LOGF(sock, "recv input: not enough data available, only %lli bytes out of %li\n", sock->bytesAvailable(), cmd_size);
+          CLIENT_LOGF(sock, "recv input: not enough data available, only %" PRIi64 " bytes out of %" PRIu32 "\n", static_cast<int64_t>(sock->bytesAvailable()), cmd_size);
           return;
         }
 
@@ -1108,7 +1120,7 @@ void MITM::readyRead() {
       qint64 readBytes = sock->read((char*)&input.frame_num, cmd_size);
 
       if(readBytes != (qint64)cmd_size) {
-        CLIENT_LOGF(sock, "could not read input from client. got %lli bytes when expecting %li, aborting\n", readBytes, cmd_size);
+        CLIENT_LOGF(sock, "could not read input from client. got %" PRIi64 " bytes when expecting %" PRIi32 ", aborting\n", static_cast<int64_t>(readBytes), cmd_size);
         sock->deleteLater();
         return;
       }
@@ -1118,17 +1130,17 @@ void MITM::readyRead() {
       if(sockets.indexOf(sock) == 0) {
         // this is the first (master) connection
         // server follows the first connection's frame number
-        CLIENT_LOGF2(sock, "got INPUT from master, setting server frame count to %u (was %u)", ntohl(input.frame_num), frameNumber);
+        CLIENT_LOGF2(sock, "got INPUT from master, setting server frame count to %u (was %u)", qFromBigEndian(input.frame_num), frameNumber);
         dump_uints((const char *)&input, sizeof(input));
-        frameNumber = ntohl(input.frame_num);
+        frameNumber = qFromBigEndian(input.frame_num);
       }
 
       // server is transparent, so we send NOINPUT back to all the clients to tell them we aren't sending it any input ourselves
       // (and that the server is done with this frame completely!)
       noinput_buf_s noinput;
-      noinput.cmd[0] = htonl(CMD_NOINPUT);
-      noinput.cmd[1] = htonl(sizeof(noinput) - sizeof(noinput.cmd));
-      noinput.frame_num = htonl(frameNumber);
+      noinput.cmd[0] = qToBigEndian(CMD_NOINPUT);
+      noinput.cmd[1] = qToBigEndian(static_cast<quint32>(sizeof(noinput) - sizeof(noinput.cmd)));
+      noinput.frame_num = qToBigEndian(frameNumber);
 
       // forward this INPUT to everyone else, and send NOINPUT to everyone
       for(int i = 0; i < sockets.count(); ++i) {
@@ -1182,7 +1194,7 @@ void MITM::readyRead() {
   // if we didn't use all the data we got, keep reading
   if(sock->bytesAvailable() > 0)
   {
-    //CLIENT_LOGF(sock, "still %lli bytes left, queueing readyRead\n", sock->bytesAvailable());
+    //CLIENT_LOGF(sock, "still %" PRIi64 " bytes left, queueing readyRead\n", sock->bytesAvailable());
     readyRead();
   }
 }

@@ -3,6 +3,8 @@ TEMPLATE = app
 SOURCES += main.cpp mitm.cpp
 HEADERS += mitm.h
 
+win32:LIBS += -lws2_32
+
 verbose {
   DEFINES += DEBUG
 }
