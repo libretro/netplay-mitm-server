@@ -167,6 +167,7 @@ private slots:
   void disconnected();
   void error(QAbstractSocket::SocketError socketError);
   void timeout();
+  quint16 findFreePort();
 
 private:
   void sendMODE(QTcpSocket *sock);
@@ -174,6 +175,7 @@ private:
   QPointer<QTcpServer> m_server;
   QList<Server> m_servers;
   QCommandLineParser m_getopt;
+  QPair<quint16, quint16> m_portRange;
   QTimer m_timer;
 };
 

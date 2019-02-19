@@ -1,5 +1,5 @@
 /*  netplay-mitm-server - A man-in-the-middle server implementation for RetroArch netplay.
- *  Copyright (C) 2017 - Brad Parker
+ *  Copyright (C) 2017-2019 - Brad Parker
  *
  *  netplay-mitm-server is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU General Public License as published by the Free Software Found-
@@ -100,6 +100,7 @@ MITM::MITM(QObject *parent) :
   ,m_server(new QTcpServer(this))
   ,m_servers()
   ,m_getopt()
+  ,m_portRange(1024, 65535)
   ,m_timer()
 {
 #ifdef Q_OS_UNIX
@@ -125,6 +126,7 @@ MITM::MITM(QObject *parent) :
   m_getopt.addVersionOption();
   m_getopt.addOption(QCommandLineOption(QStringList() << "p" << "port", "Port to listen on, default is 55435.", "port"));
   m_getopt.addOption(QCommandLineOption(QStringList() << "m" << "multi", "Multi-server mode. The main port becomes a command interface used to request new ports to be added. Send CMD_REQ_PORT to add a new server."));
+  m_getopt.addOption(QCommandLineOption(QStringList() << "r" << "range", "Multi-server mode port range (ex: 1024-65535). Requests for new ports will only be added within this range. Without this option, ports are assigned randomly.", "range"));
   m_getopt.process(*qApp);
 
   connect(m_server.data(), SIGNAL(acceptError(QAbstractSocket::SocketError)), this, SLOT(acceptError(QAbstractSocket::SocketError)));
@@ -214,11 +216,56 @@ void MITM::sendMODE(QTcpSocket *sock) {
   CLIENT_LOG(sock, "sent MODE to all users");
 }
 
+quint16 MITM::findFreePort() {
+  quint16 freePort = 0;
+  QVector<quint16> usedPorts;
+
+  for(int i = 0; i < m_servers.count(); ++i) {
+    const Server &s = m_servers.at(i);
+
+    if(s.server) {
+      quint16 port = s.server->serverPort();
+
+      usedPorts.append(port);
+    }
+  }
+
+  for(int i = m_portRange.first; i <= m_portRange.second; ++i) {
+    if(!usedPorts.contains(i)) {
+      freePort = i;
+      break;
+    }
+  }
+
+  return freePort;
+}
+
 void MITM::start() {
   int port = 55435;
 
   if(m_getopt.isSet("port")) {
     port = m_getopt.value("port").toInt();
+  }
+
+  if(m_getopt.isSet("range")) {
+    QString rangeStr = m_getopt.value("range");
+
+    if(!rangeStr.isEmpty()) {
+      QStringList rangeList = rangeStr.split("-");
+
+      if(rangeList.count() == 2) {
+        m_portRange.first = rangeList.at(0).toUShort();
+        m_portRange.second = rangeList.at(1).toUShort();
+      }else{
+        printf("invalid port range\n");
+        QCoreApplication::quit();
+        return;
+      }
+    }else{
+      printf("no port range specified\n");
+      QCoreApplication::quit();
+      return;
+    }
   }
 
   if(!m_server)
@@ -1072,8 +1119,14 @@ void MITM::readyRead() {
       buf.cmd[0] = qToBigEndian(CMD_NEW_PORT);
       buf.cmd[1] = qToBigEndian(static_cast<quint32>(sizeof(uint32_t)));
 
-      if(!server->listen(QHostAddress::Any, 0)) {
-        printf("could not bind to a random port\n");
+      quint16 newPort = 0;
+
+      if(m_getopt.isSet("range")) {
+        newPort = findFreePort();
+      }
+
+      if(!server->listen(QHostAddress::Any, newPort)) {
+        printf("could not bind to port %" PRIu16 "\n", newPort);
 
         buf.port = qToBigEndian(0);
 
