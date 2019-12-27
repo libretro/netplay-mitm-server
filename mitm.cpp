@@ -141,7 +141,7 @@ MITM::MITM(QObject *parent) :
   m_servers.append(s);
 }
 
-void MITM::sendMODE(QTcpSocket *sock) {
+void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
   union {
     mode_buf_pre5_s mode_pre5;
     mode_buf_s mode;
@@ -170,11 +170,20 @@ void MITM::sendMODE(QTcpSocket *sock) {
 
   mode.frame_num = qToBigEndian(frameNumber);
 
-  if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-    mode.client_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock) + 1));
-    mode.devices = qToBigEndian(1U << sockets.indexOf(sock));
+  if(disconnecting_client) {
+    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+      mode.client_num = qToBigEndian(static_cast<quint16>(disconnecting_client));
+      mode.devices = qToBigEndian(static_cast<quint16>(0));
+    }else{
+      mode_pre5.player_num = qToBigEndian(static_cast<quint16>(disconnecting_client));
+    }
   }else{
-    mode_pre5.player_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock)));
+    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+      mode.client_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock) + 1));
+      mode.devices = qToBigEndian(1U << sockets.indexOf(sock));
+    }else{
+      mode_pre5.player_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock)));
+    }
   }
 
   for(int i = 0; i < sockets.count(); ++i) {
@@ -188,17 +197,21 @@ void MITM::sendMODE(QTcpSocket *sock) {
       continue;
     }
 
-    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-      if(player == sock) {
-        mode.target = qToBigEndian(static_cast<quint16>(1U << 15 | 1U << 14));
-      }else{
-        mode.target = qToBigEndian(static_cast<quint16>(1U << 14));
-      }
+    if(disconnecting_client) {
+        mode.target = qToBigEndian(static_cast<quint16>(0));
     }else{
-      if(player == sock) {
-        mode.target = qToBigEndian(static_cast<quint16>(3)); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+      if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+        if(player == sock) {
+          mode.target = qToBigEndian(static_cast<quint16>(1U << 15 | 1U << 14));
+        }else{
+          mode.target = qToBigEndian(static_cast<quint16>(1U << 14));
+        }
       }else{
-        mode.target = qToBigEndian(static_cast<quint16>(2));
+        if(player == sock) {
+          mode.target = qToBigEndian(static_cast<quint16>(3)); // bit0 == is MODE being sent to the affected player, bit1 == is the user now playing or spectating
+        }else{
+          mode.target = qToBigEndian(static_cast<quint16>(2));
+        }
       }
     }
 
@@ -1189,6 +1202,9 @@ void MITM::readyRead() {
         CLIENT_LOGF2(sock, "got INPUT from master, setting server frame count to %u (was %u)", qFromBigEndian(input.frame_num), frameNumber);
         dump_uints((const char *)&input, sizeof(input));
         frameNumber = qFromBigEndian(input.frame_num);
+      }else{
+        CLIENT_LOGF2(sock, "got INPUT from client for frame number %u", qFromBigEndian(input.frame_num));
+        dump_uints((const char *)&input, sizeof(input));
       }
 
       // server is transparent, so we send NOINPUT back to all the clients to tell them we aren't sending it any input ourselves
@@ -1252,7 +1268,7 @@ void MITM::readyRead() {
   // if we didn't use all the data we got, keep reading
   if(sock->bytesAvailable() > 0)
   {
-    //CLIENT_LOGF(sock, "still %" PRIi64 " bytes left, queueing readyRead\n", sock->bytesAvailable());
+    CLIENT_LOGF2(sock, "still %lld bytes left, queueing readyRead\n", sock->bytesAvailable());
     readyRead();
   }
 }
@@ -1276,9 +1292,13 @@ void MITM::disconnected() {
   qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
   server->setProperty("updated", epoch);
 
+  uint disconnecting_client_num = sockets.indexOf(sock) + 1;
   sockets.removeOne(sock);
 
   CLIENT_LOG(sock, "client disconnected");
+
+  // Announce the disconnection to all other clients
+  sendMODE(sock, disconnecting_client_num);
 
   sock->deleteLater();
 }

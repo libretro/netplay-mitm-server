@@ -170,7 +170,7 @@ private slots:
   quint16 findFreePort();
 
 private:
-  void sendMODE(QTcpSocket *sock);
+  void sendMODE(QTcpSocket *sock, uint disconnecting_client = 0);
 
   QPointer<QTcpServer> m_server;
   QList<Server> m_servers;
