@@ -1016,12 +1016,14 @@ void MITM::readyRead() {
       if(readBytes != (qint64)state_serial_size) {
         CLIENT_LOGF(sock, "could not read save state serialization from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), state_serial_size);
         sock->deleteLater();
+        free(state);
         return;
       }
 
       if(sockets.indexOf(sock) != 0) {
         // only the master should be sending us savestates
         CLIENT_LOG(sock, "got savestate from a client that wasn't the master");
+        free(state);
         break;
       }
 
@@ -1073,6 +1075,7 @@ void MITM::readyRead() {
         sock->setProperty("state", STATE_NONE);
       }
 
+      free(state);
       break;
     }
     case STATE_RECV_REQ_PORT:
@@ -1205,6 +1208,8 @@ void MITM::readyRead() {
         if(player->property("sync_sent").toBool()) {
           if(player != sock) {
             // send this INPUT to all other handshook players
+            CLIENT_LOGF2(sock, "sending INPUT to player %d:", sockets.indexOf(player));
+            dump_uints((const char *)&input, sizeof(input));
             player->write((const char *)&input, cmd_size + 2*sizeof(uint32_t));
           }
 

@@ -1,0 +1,7 @@
+.vscode
+*.o
+*.log
+mitm
+moc_*
+.qmake*
+Makefile
