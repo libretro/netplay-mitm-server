@@ -130,7 +130,7 @@ struct Server {
 
   uint32_t version;
   QPointer<QTcpServer> server;
-  QList<QPointer<QTcpSocket> > sockets;
+  QMap<uint, QPointer<QTcpSocket>> sockets;
 };
 
 enum ClientState {
@@ -170,7 +170,8 @@ private slots:
   quint16 findFreePort();
 
 private:
-  void sendMODE(QTcpSocket *sock, uint disconnecting_client = 0);
+  void sendMODE(QTcpSocket *sock, bool has_disconnected = false);
+  uint nextClientNum(QMap<uint, QPointer<QTcpSocket>> *sockets);
 
   QPointer<QTcpServer> m_server;
   QList<Server> m_servers;

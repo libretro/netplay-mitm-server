@@ -141,7 +141,7 @@ MITM::MITM(QObject *parent) :
   m_servers.append(s);
 }
 
-void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
+void MITM::sendMODE(QTcpSocket *sock, bool has_disconnected) {
   union {
     mode_buf_pre5_s mode_pre5;
     mode_buf_s mode;
@@ -161,33 +161,31 @@ void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
   mode.cmd[1] = qToBigEndian(static_cast<quint32>(mode_size - sizeof(mode_pre5.cmd)));
 
   const QPointer<QTcpServer> &server = server_s.server;
-  const QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
+  const QMap<uint, QPointer<QTcpSocket> > &sockets = server_s.sockets;
 
   if(sockets.count() == 0 || !server)
     return;
 
   uint frameNumber = server->property("frame_count").toUInt();
+  const uint client_num = sock->property("client_num").toUInt();
 
   mode.frame_num = qToBigEndian(frameNumber);
 
-  if(disconnecting_client) {
-    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-      mode.client_num = qToBigEndian(static_cast<quint16>(disconnecting_client));
+  if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
+    mode.client_num = qToBigEndian(static_cast<quint16>(client_num));
+    if(has_disconnected) {
       mode.devices = qToBigEndian(static_cast<quint16>(0));
     }else{
-      mode_pre5.player_num = qToBigEndian(static_cast<quint16>(disconnecting_client));
+      mode.devices = qToBigEndian(1U << (client_num-1));
     }
   }else{
-    if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-      mode.client_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock) + 1));
-      mode.devices = qToBigEndian(1U << sockets.indexOf(sock));
-    }else{
-      mode_pre5.player_num = qToBigEndian(static_cast<quint16>(sockets.indexOf(sock)));
-    }
+    mode_pre5.player_num = qToBigEndian(static_cast<quint16>(client_num-1));
   }
 
-  for(int i = 0; i < sockets.count(); ++i) {
-    const QPointer<QTcpSocket> &player = sockets.at(i);
+  QMapIterator<uint, QPointer<QTcpSocket>> it(sockets);
+  while (it.hasNext()) {
+    it.next();
+    const QPointer<QTcpSocket> &player = it.value();
 
     if(!player)
       continue;
@@ -197,7 +195,7 @@ void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
       continue;
     }
 
-    if(disconnecting_client) {
+    if(has_disconnected) {
         mode.target = qToBigEndian(static_cast<quint16>(0));
     }else{
       if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
@@ -215,7 +213,7 @@ void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
       }
     }
 
-    CLIENT_LOGF(sock, "MODE for player %d:", sockets.indexOf(player));
+    CLIENT_LOGF(sock, "MODE for client %u:", player->property("client_num").toUInt());
 #ifdef DEBUG
     for(uint i = 0; i < sizeof(mode_pre5) / sizeof(uint32_t); ++i) {
       printf(" %08X", qFromBigEndian(((uint32_t*)&mode_pre5)[i]));
@@ -226,14 +224,32 @@ void MITM::sendMODE(QTcpSocket *sock, uint disconnecting_client) {
     player->write((const char *)&mode, mode_size);
   }
 
-  CLIENT_LOG(sock, "sent MODE to all users");
+  CLIENT_LOG(sock, "sent MODE to all clients");
+}
+
+// Try to find the next free client_num, fills holes in the sequence.
+// We can do this on this QMap, since QMaps are ordered.
+uint MITM::nextClientNum(QMap<uint, QPointer<QTcpSocket>> *sockets) {
+  uint client_num = 1;
+
+  QMapIterator<uint, QPointer<QTcpSocket>> it(*sockets);
+  while (it.hasNext()) {
+    it.next();
+    uint num = it.key();
+    if (num > client_num) {
+      break;
+    }
+    client_num++;
+  }
+
+  return client_num;
 }
 
 quint16 MITM::findFreePort() {
   quint16 freePort = 0;
   QVector<quint16> usedPorts;
 
-  for(int i = 0; i < m_servers.count(); ++i) {
+  for(int i = 0; i < m_servers.count(); i++) {
     const Server &s = m_servers.at(i);
 
     if(s.server) {
@@ -243,7 +259,7 @@ quint16 MITM::findFreePort() {
     }
   }
 
-  for(int i = m_portRange.first; i <= m_portRange.second; ++i) {
+  for(int i = m_portRange.first; i <= m_portRange.second; i++) {
     if(!usedPorts.contains(i)) {
       freePort = i;
       break;
@@ -346,7 +362,7 @@ void MITM::newConnection() {
   int server_index = 0;
 
   // find Server associated with this QTcpServer
-  for(int i = 0; i < m_servers.count(); ++i) {
+  for(int i = 0; i < m_servers.count(); i++) {
     Server &s = m_servers[i];
 
     if(s.server == server) {
@@ -364,7 +380,7 @@ void MITM::newConnection() {
 
   Server &server_s = *server_ptr;
   QTcpSocket *sock = server->nextPendingConnection();
-  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
+  QMap<uint, QPointer<QTcpSocket> > &sockets = server_s.sockets;
 
   if(!sock) {
     printf("could not find socket for new connection\n");
@@ -372,7 +388,14 @@ void MITM::newConnection() {
     return;
   }
 
-  sockets.append(sock);
+  if (sockets.count() >= MAX_CLIENTS) {
+    printf("server has reached max capacity of clients\n");
+    return;
+  }
+
+  const uint client_num = nextClientNum(&sockets);
+  sock->setProperty("client_num", client_num);
+  sockets.insert(client_num, sock);
 
   qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
   server->setProperty("updated", epoch);
@@ -382,7 +405,7 @@ void MITM::newConnection() {
   if(m_getopt.isSet("multi") && server == m_server)
     sock->setProperty("state", STATE_NONE);
 
-  CLIENT_LOG(sock, "got new connection");
+  CLIENT_LOGF(sock, "got new connection of client %u\n", client_num);
 
   connect(sock, SIGNAL(readyRead()), this, SLOT(readyRead()));
   connect(sock, SIGNAL(disconnected()), this, SLOT(disconnected()));
@@ -418,7 +441,7 @@ void MITM::readyRead() {
     return;
   }
 
-  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
+  QMap<uint, QPointer<QTcpSocket> > &sockets = server_s.sockets;
   ClientState state = static_cast<ClientState>(sock->property("state").toUInt());
   uint32_t cmd[2] = {0};
 
@@ -508,10 +531,12 @@ void MITM::readyRead() {
     }
   }
 
+  const uint client_num = sock->property("client_num").toUInt();
+
   switch(state) {
     case STATE_HEADER:
     {
-      if(sockets.indexOf(sock) == 0) {
+      if(client_num == 1) {
         if(sock->bytesAvailable() < HEADER_LEN) {
           // not enough data available yet, keep waiting
           CLIENT_LOGF(sock, "header: not enough data available, only %" PRIi64 " bytes out of %" PRIi32 "\n", static_cast<int64_t>(sock->bytesAvailable()), HEADER_LEN);
@@ -602,7 +627,7 @@ void MITM::readyRead() {
     {
       // FIXME: This code is almost identical to STATE_HEADER, can probably be refactored
       // FIXME 2: This reqiures exact match, but direct connections are now looser.
-      if(sockets.indexOf(sock) == 0) {
+      if(client_num == 1) {
         if(sock->bytesAvailable() < POST_HEADER_LEN) {
           // not enough data available yet, keep waiting
           CLIENT_LOGF(sock, "post header: not enough data available, only %" PRIi64 " bytes out of %d\n", static_cast<int64_t>(sock->bytesAvailable()), POST_HEADER_LEN);
@@ -815,7 +840,7 @@ void MITM::readyRead() {
       CLIENT_LOGF(sock, "info: core version is %s\n", info.core_version);
       CLIENT_LOGF(sock, "info: content crc is %08X\n", qFromBigEndian(info.content_crc));
 
-      if(sockets.indexOf(sock) == 0) {
+      if(client_num == 1) {
         if(server->property("first_sync_sent").toBool()) {
           // the first client is just echoing back the info we already have, ignore it
           sock->setProperty("state", STATE_NONE);
@@ -826,7 +851,7 @@ void MITM::readyRead() {
           server->setProperty("info_set", true);
           server->setProperty("info", QVariant::fromValue(server_info));
         }
-      }else if(sockets.indexOf(sock) > 0) {
+      }else if(client_num > 1) {
         // make sure other clients have the same INFO
         int info_mismatched = 0;
 
@@ -876,28 +901,26 @@ void MITM::readyRead() {
       sync.cmd[0] = qToBigEndian(CMD_SYNC);
       sync.cmd[1] = qToBigEndian(static_cast<quint32>(sync_payload_size));
 
-      for(int i = 0; i < sockets.count() && i < MAX_CLIENTS - 1; ++i) {
-        const QPointer<QTcpSocket> &player = sockets.at(i);
+      if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
+        sync.client_num = qToBigEndian(client_num);
+
+      QMapIterator<uint, QPointer<QTcpSocket>> it(sockets);
+      while (it.hasNext()) {
+        it.next();
+        const QPointer<QTcpSocket> &player = it.value();
 
         if(!player)
           continue;
 
-        if(player == sock) {
-          // we don't count ourselves
-          if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE)
-            sync.client_num = qToBigEndian(i + 1);
-          continue;
-        }
-
-        if(!player->property("sync_sent").toBool()) {
-          // don't count other players that haven't finished their handshake yet
+        // we don't count ourselves and other players that haven't finished their handshake yet
+        if(player == sock || !player->property("sync_sent").toBool()) {
           continue;
         }
 
         if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
-          sync.d_c_mapping[i] = qToBigEndian(1U << (i + 1));
+          sync.d_c_mapping[it.key()-1] = qToBigEndian(1U << it.key());
         }else{
-          sync_pre5.players |= 1U << i;
+          sync_pre5.players |= 1U << (it.key()-1);
         }
       }
 
@@ -929,7 +952,7 @@ void MITM::readyRead() {
 
       CLIENT_LOG(sock, "sent sync to host");
 
-      if(sockets.indexOf(sock) == 0) {
+      if(client_num == 1) {
         server->setProperty("first_sync_sent", true);
       }else{
         // after any non-master connection is up, request a savestate from the master
@@ -937,7 +960,7 @@ void MITM::readyRead() {
         req.cmd[0] = qToBigEndian(CMD_REQ_SAVE);
         req.cmd[1] = qToBigEndian(0);
 
-        const QPointer<QTcpSocket> &master = sockets.at(0);
+        const QPointer<QTcpSocket> &master = sockets.value(1);
 
         if(master) {
           master->setProperty("savestate_pending", true);
@@ -958,7 +981,7 @@ void MITM::readyRead() {
         sock->read(cmd[1]);
       }
 
-      const QPointer<QTcpSocket> &master = sockets.at(0);
+      const QPointer<QTcpSocket> &master = sockets.value(1);
 
       if(master) {
         bool savestate_pending = master->property("savestate_pending").toBool();
@@ -1033,7 +1056,7 @@ void MITM::readyRead() {
         return;
       }
 
-      if(sockets.indexOf(sock) != 0) {
+      if(client_num != 1) {
         // only the master should be sending us savestates
         CLIENT_LOG(sock, "got savestate from a client that wasn't the master");
         free(state);
@@ -1042,7 +1065,7 @@ void MITM::readyRead() {
 
       CLIENT_LOGF(sock, "successfully received savestate of %" PRIu64 " bytes with original size %u\n", state_serial_size, qFromBigEndian(loadsave.orig_size));
 
-      const QPointer<QTcpSocket> &master = sockets.at(0);
+      const QPointer<QTcpSocket> &master = sockets.value(1);
 
       if(master) {
         master->setProperty("savestate_pending", false);
@@ -1051,8 +1074,10 @@ void MITM::readyRead() {
 
         CLIENT_LOGF(sock, "setting server frame count to savestate value: %u\n", frameNumber);
 
-        for(int i = 0; i < sockets.count(); ++i) {
-          const QPointer<QTcpSocket> &player = sockets.at(i);
+        QMapIterator<uint, QPointer<QTcpSocket>> it(sockets);
+        while (it.hasNext()) {
+          it.next();
+          const QPointer<QTcpSocket> &player = it.value();
 
           if(!player)
             continue;
@@ -1061,12 +1086,14 @@ void MITM::readyRead() {
             // forward the savestate to everyone else
             player->write((const char *)&loadsave, sizeof(loadsave));
             player->write((const char *)state, state_serial_size);
-            CLIENT_LOGF(sock, "sent savestate to player %d\n", sockets.indexOf(player));
+            CLIENT_LOGF(sock, "sent savestate to client %u\n", it.key());
           }
         }
 
-        for(int i = 0; i < sockets.count(); ++i) {
-          const QPointer<QTcpSocket> &player = sockets.at(i);
+        it.toFront();
+        while (it.hasNext()) {
+          it.next();
+          const QPointer<QTcpSocket> &player = it.value();
 
           if(!player)
             continue;
@@ -1082,7 +1109,7 @@ void MITM::readyRead() {
 
         CLIENT_LOGF(sock, "incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
 
-        ++frameNumber;
+        frameNumber++;
 
         server->setProperty("frame_count", frameNumber);
         sock->setProperty("state", STATE_NONE);
@@ -1196,14 +1223,14 @@ void MITM::readyRead() {
 
       uint frameNumber = server->property("frame_count").toUInt();
 
-      if(sockets.indexOf(sock) == 0) {
+      if(client_num == 1) {
         // this is the first (master) connection
         // server follows the first connection's frame number
         CLIENT_LOGF2(sock, "got INPUT from master, setting server frame count to %u (was %u)", qFromBigEndian(input.frame_num), frameNumber);
         dump_uints((const char *)&input, sizeof(input));
         frameNumber = qFromBigEndian(input.frame_num);
       }else{
-        CLIENT_LOGF2(sock, "got INPUT from client for frame number %u", qFromBigEndian(input.frame_num));
+        CLIENT_LOGF2(sock, "got INPUT from client %u for frame number %u", client_num, qFromBigEndian(input.frame_num));
         dump_uints((const char *)&input, sizeof(input));
       }
 
@@ -1215,8 +1242,10 @@ void MITM::readyRead() {
       noinput.frame_num = qToBigEndian(frameNumber);
 
       // forward this INPUT to everyone else, and send NOINPUT to everyone
-      for(int i = 0; i < sockets.count(); ++i) {
-        const QPointer<QTcpSocket> &player = sockets.at(i);
+      QMapIterator<uint, QPointer<QTcpSocket>> it(sockets);
+      while (it.hasNext()) {
+        it.next();
+        const QPointer<QTcpSocket> &player = it.value();
 
         if(!player)
           continue;
@@ -1224,14 +1253,14 @@ void MITM::readyRead() {
         if(player->property("sync_sent").toBool()) {
           if(player != sock) {
             // send this INPUT to all other handshook players
-            CLIENT_LOGF2(sock, "sending INPUT to player %d:", sockets.indexOf(player));
+            CLIENT_LOGF2(sock, "sending INPUT to client %d:", it.key());
             dump_uints((const char *)&input, sizeof(input));
             player->write((const char *)&input, cmd_size + 2*sizeof(uint32_t));
           }
 
-          if(sockets.indexOf(sock) == 0) {
+          if(client_num == 1) {
             // send NOINPUT to everyone, but only when getting an INPUT from the master client, as we are keeping our frames in sync with it
-            CLIENT_LOGF2(sock, "sending NOINPUT to player %d:", sockets.indexOf(player));
+            CLIENT_LOGF2(sock, "sending NOINPUT to client %d:", it.key());
             dump_uints((const char *)&noinput, sizeof(noinput));
             player->write((const char *)&noinput, sizeof(noinput));
           }
@@ -1240,12 +1269,12 @@ void MITM::readyRead() {
 
       sock->setProperty("state", STATE_NONE);
 
-      if(sockets.indexOf(sock) == 0)
+      if(client_num == 1)
       {
         // Increment server frame number ahead of master client sending a new INPUT with the same frame number.
         // This allows sending MODE to new players as the first event of the next frame, before the master's INPUT.
         CLIENT_LOGF2(sock, "end of frame for master (sent both INPUT and NOINPUT), incrementing server frame count to %u (was %u)\n", frameNumber + 1, frameNumber);
-        ++frameNumber;
+        frameNumber++;
       }
 
       qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
@@ -1281,7 +1310,7 @@ void MITM::disconnected() {
 
   Server &server_s = m_servers[sock->property("server").toInt()];
   QPointer<QTcpServer> &server = server_s.server;
-  QList<QPointer<QTcpSocket> > &sockets = server_s.sockets;
+  QMap<uint, QPointer<QTcpSocket> > &sockets = server_s.sockets;
 
   if(!server) {
     printf("could not find server for previous connection\n");
@@ -1292,13 +1321,15 @@ void MITM::disconnected() {
   qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
   server->setProperty("updated", epoch);
 
-  uint disconnecting_client_num = sockets.indexOf(sock) + 1;
-  sockets.removeOne(sock);
+  const uint client_num = sock->property("client_num").toUInt();
+  sockets.remove(client_num);
 
-  CLIENT_LOG(sock, "client disconnected");
+  CLIENT_LOGF(sock, "client %u disconnected\n", client_num);
 
-  // Announce the disconnection to all other clients
-  sendMODE(sock, disconnecting_client_num);
+  // Announce the disconnection to all other clients, but only
+  // if the player was actually initialized
+  if(sock->property("sync_sent").toBool())
+    sendMODE(sock, true);
 
   sock->deleteLater();
 }
