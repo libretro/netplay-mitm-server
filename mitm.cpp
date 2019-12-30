@@ -141,7 +141,7 @@ MITM::MITM(QObject *parent) :
   m_servers.append(s);
 }
 
-void MITM::sendMODE(QTcpSocket *sock, bool has_disconnected) {
+void MITM::sendMODE(QTcpSocket *sock, enum ModeCmd cmd) {
   union {
     mode_buf_pre5_s mode_pre5;
     mode_buf_s mode;
@@ -173,7 +173,7 @@ void MITM::sendMODE(QTcpSocket *sock, bool has_disconnected) {
 
   if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
     mode.client_num = qToBigEndian(static_cast<quint16>(client_num));
-    if(has_disconnected) {
+    if(cmd == MODE_CMD_SPECTATE || cmd == MODE_CMD_DISCONNECT) {
       mode.devices = qToBigEndian(static_cast<quint16>(0));
     }else{
       mode.devices = qToBigEndian(1U << (client_num-1));
@@ -195,7 +195,7 @@ void MITM::sendMODE(QTcpSocket *sock, bool has_disconnected) {
       continue;
     }
 
-    if(has_disconnected) {
+    if(cmd == MODE_CMD_SPECTATE || cmd == MODE_CMD_DISCONNECT) {
         mode.target = qToBigEndian(static_cast<quint16>(0));
     }else{
       if(server_s.version >= NETPLAY_VERSION_INPUT_UPGRADE) {
@@ -222,6 +222,22 @@ void MITM::sendMODE(QTcpSocket *sock, bool has_disconnected) {
     printf("\n");
 #endif
     player->write((const char *)&mode, mode_size);
+  }
+
+  // Inform the client of every spectating client.
+  if(cmd == MODE_CMD_PLAY) {
+    QMapIterator<uint, QPointer<QTcpSocket>> it(sockets);
+    while (it.hasNext()) {
+      it.next();
+      const QPointer<QTcpSocket> &player = it.value();
+
+      if (sock != player && player->property("spectating").toBool()) {
+        mode.client_num = qToBigEndian(static_cast<quint16>(it.key()));
+        mode.devices = qToBigEndian(static_cast<quint16>(0));
+        mode.target = qToBigEndian(static_cast<quint16>(0));
+        sock->write((const char *)&mode, mode_size);
+      }
+    }
   }
 
   CLIENT_LOG(sock, "sent MODE to all clients");
@@ -395,6 +411,7 @@ void MITM::newConnection() {
 
   const uint client_num = nextClientNum(&sockets);
   sock->setProperty("client_num", client_num);
+  sock->setProperty("spectating", false);
   sockets.insert(client_num, sock);
 
   qint64 epoch = QDateTime::currentMSecsSinceEpoch() / 1000;
@@ -511,6 +528,9 @@ void MITM::readyRead() {
           break;
         case CMD_PLAY:
           state = STATE_RECV_PLAY;
+          break;
+        case CMD_SPECTATE:
+          state = STATE_RECV_SPECTATE;
           break;
         case CMD_INPUT:
           state = STATE_RECV_INPUT;
@@ -972,6 +992,14 @@ void MITM::readyRead() {
 
       break;
     }
+    case STATE_RECV_SPECTATE:
+    {
+      CLIENT_LOGF(sock, "recieved spectate command from client %u\n", client_num);
+      sock->setProperty("spectating", true);
+      sendMODE(sock, MODE_CMD_SPECTATE);
+
+      break;
+    }
     case STATE_RECV_PLAY:
     {
       if(cmd[1] > 0) {
@@ -986,8 +1014,10 @@ void MITM::readyRead() {
       if(master) {
         bool savestate_pending = master->property("savestate_pending").toBool();
 
+        sock->setProperty("spectating", false);
+
         if(!savestate_pending) {
-          sendMODE(sock);
+          sendMODE(sock, MODE_CMD_PLAY);
           CLIENT_LOG(sock, "received PLAY");
         }else{
           // track which player sent the original PLAY command so the 'you' bit in MODE can be set accordingly
@@ -1102,7 +1132,7 @@ void MITM::readyRead() {
 
           // find which player sent the original PLAY, so we know who to set the 'you' bit for in the MODE command
           if(sent_play) {
-            sendMODE(player);
+            sendMODE(player, MODE_CMD_PLAY);
             player->setProperty("sent_play", false);
           }
         }
@@ -1114,8 +1144,8 @@ void MITM::readyRead() {
         server->setProperty("frame_count", frameNumber);
         sock->setProperty("state", STATE_NONE);
       }
-
       free(state);
+
       break;
     }
     case STATE_RECV_REQ_PORT:
@@ -1329,7 +1359,7 @@ void MITM::disconnected() {
   // Announce the disconnection to all other clients, but only
   // if the player was actually initialized
   if(sock->property("sync_sent").toBool())
-    sendMODE(sock, true);
+    sendMODE(sock, MODE_CMD_DISCONNECT);
 
   sock->deleteLater();
 }
