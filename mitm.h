@@ -39,6 +39,7 @@
 #define CMD_NICK 0x0020
 #define CMD_INFO 0x0022
 #define CMD_SYNC 0x0023
+#define CMD_SPECTATE 0x0024
 #define CMD_PLAY 0x0025
 #define CMD_MODE 0x0026
 #define CMD_REQ_SAVE 0x0041
@@ -146,7 +147,14 @@ enum ClientState {
   STATE_RECV_INPUT,
   STATE_RECV_REQ_SAVE,
   STATE_RECV_LOAD_SAVE,
-  STATE_RECV_REQ_PORT
+  STATE_RECV_REQ_PORT,
+  STATE_RECV_SPECTATE
+};
+
+enum ModeCmd {
+  MODE_CMD_PLAY = 0,
+  MODE_CMD_SPECTATE,
+  MODE_CMD_DISCONNECT
 };
 
 class MITM : public QObject {
@@ -170,7 +178,7 @@ private slots:
   quint16 findFreePort();
 
 private:
-  void sendMODE(QTcpSocket *sock, bool has_disconnected = false);
+  void sendMODE(QTcpSocket *sock, enum ModeCmd);
   uint nextClientNum(QMap<uint, QPointer<QTcpSocket>> *sockets);
 
   QPointer<QTcpServer> m_server;
