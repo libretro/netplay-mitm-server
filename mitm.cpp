@@ -623,10 +623,8 @@ void MITM::readyRead() {
         // word1 is the platform info, and they're allowed to be different, so don't check it
         bool word0 = memcmp(header + sizeof(uint32_t) * 0, server_header_data + sizeof(uint32_t) * 0, sizeof(uint32_t));
         //bool word1 = memcmp(header + sizeof(uint32_t) * 1, server_header_data + sizeof(uint32_t) * 1, sizeof(uint32_t));
-        bool word2 = memcmp(header + sizeof(uint32_t) * 2, server_header_data + sizeof(uint32_t) * 2, sizeof(uint32_t));
-        bool word3 = memcmp(header + sizeof(uint32_t) * 3, server_header_data + sizeof(uint32_t) * 3, sizeof(uint32_t));
 
-        if(word0 || word2 || word3) {
+        if(word0) {
           // header did not match the first connection
           CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
@@ -709,9 +707,8 @@ void MITM::readyRead() {
         const char *server_header_data = server_header.constData();
 
         bool word0 = memcmp(header + sizeof(uint32_t) * 0, server_header_data + sizeof(uint32_t) * 0, sizeof(uint32_t));
-        bool word1 = memcmp(header + sizeof(uint32_t) * 1, server_header_data + sizeof(uint32_t) * 1, sizeof(uint32_t));
 
-        if(word0 || word1) {
+        if(word0) {
           // header did not match the first connection
           CLIENT_LOG(sock, "header did not match the first connection, aborting");
           sock->deleteLater();
@@ -878,7 +875,7 @@ void MITM::readyRead() {
         info_mismatched |= memcmp(&server_info.core_name, &info.core_name, sizeof(info.core_name));
         // NOTE: ignore core version checking for now
         //info_matches |= memcmp(&server_info.core_version, &info.core_version, sizeof(info.core_version));
-        info_mismatched |= memcmp(&server_info.content_crc, &info.content_crc, sizeof(info.content_crc));
+        //info_mismatched |= memcmp(&server_info.content_crc, &info.content_crc, sizeof(info.content_crc));
 
         if(!info_mismatched) {
           // info matches
