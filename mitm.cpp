@@ -844,7 +844,7 @@ void MITM::readyRead() {
         return;
       }
 
-      qint64 readBytes = sock->read(info.core_name, info_payload_size);
+      qint64 readBytes = sock->read(&info.content_crc, info_payload_size);
 
       if(readBytes != (qint64)info_payload_size) {
         CLIENT_LOGF(sock, "could not read info from client. got %" PRIi64 " bytes when expecting %" PRIu64 ", aborting\n", static_cast<int64_t>(readBytes), info_payload_size);
