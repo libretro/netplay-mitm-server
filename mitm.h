@@ -56,9 +56,9 @@ struct nick_buf_s {
 
 struct info_buf_s {
   uint32_t cmd[2];
+  uint32_t content_crc;
   char core_name[NICK_LEN];
   char core_version[NICK_LEN];
-  uint32_t content_crc;
 };
 
 struct sync_buf_pre5_s {
